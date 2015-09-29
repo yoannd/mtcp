@@ -551,7 +551,7 @@ main(int argc, char **argv)
 	core_limit = num_cores;
 
 	if (argc < 2) {
-		TRACE_ERROR("$%s directory_to_service [--use-ipv6]\n", argv[0]);
+		TRACE_ERROR("$%s directory_to_service\n", argv[0]);
 		return FALSE;
 	}
 

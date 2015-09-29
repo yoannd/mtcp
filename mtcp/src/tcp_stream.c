@@ -211,6 +211,9 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 	tcp_stream *stream = NULL;
 	int ret;
 
+	uint8_t* sa;
+	uint8_t* da;
+
 	pthread_mutex_lock(&mtcp->ctx->flow_pool_lock);
 
 	stream = (tcp_stream *)MPAllocateChunk(mtcp->flow_pool);
@@ -327,8 +330,33 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 		return NULL;
 	}
 
-	TRACE_STREAM("CREATED NEW TCP STREAM %d: ", stream->id);
+	if (stream->saddr.sa_family == AF_INET) {
+		sa = (uint8_t *)&stream->saddr4.sin_addr;
+		da = (uint8_t *)&stream->daddr4.sin_addr;
+		TRACE_STREAM("CREATED NEW TCP STREAM %d: "
+				"%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u)\n", stream->id,
+				sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], ntohs(stream->dport),
+				stream->sndvar->iss);
+	} else if (stream->saddr.sa_family == AF_INET6) {
+		sa = (uint8_t *)&stream->saddr6.sin6_addr;
+		da = (uint8_t *)&stream->daddr6.sin6_addr;
+		TRACE_STREAM("CREATED NEW TCP STREAM %d: "
+				"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%d)"
+				"-> %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%d)"
+				" (ISS: %u)\n",
+				stream->id,
+				sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], sa[6], sa[7],
+				sa[8], sa[9], sa[10], sa[11], sa[12], sa[13], sa[14], sa[15],
+				ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], da[4], da[5], da[6], da[7],
+				da[8], sa[9], da[10], da[11], sa[12], da[13], da[14], da[15],
+				ntohs(stream->dport),
+				stream->sndvar->iss);
+	}
 
+	UNUSED(sa);
+	UNUSED(da);
 	return stream;
 }
 /*---------------------------------------------------------------------------*/
@@ -337,6 +365,7 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 {
 	struct sockaddr_storage addr;
 	int bound_addr = FALSE;
+	uint8_t* sa, *da;
 	int ret;
 
 #ifdef DUMP_STREAM
@@ -349,8 +378,30 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 	}
 #endif
 
-	TRACE_STREAM("DESTROY TCP STREAM %d: %s", stream->id, close_reason_str[stream->close_reason]);
-
+	if (stream->saddr.sa_family == AF_INET) {
+		sa = (uint8_t *)&stream->saddr4.sin_addr;
+		da = (uint8_t *)&stream->daddr4.sin_addr;
+		TRACE_STREAM("DESTROY TCP STREAM %d: "
+				"%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (%s)\n", stream->id,
+				sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], ntohs(stream->dport),
+				close_reason_str[stream->close_reason]);
+	} else if (stream->saddr.sa_family == AF_INET6) {
+		sa = (uint8_t *)&stream->saddr6.sin6_addr;
+		da = (uint8_t *)&stream->daddr6.sin6_addr;
+		TRACE_STREAM("DESTROY NEW TCP STREAM %d: "
+				"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%d)"
+				"-> %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%d)"
+				" (%s)\n",
+				stream->id,
+				sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], sa[6], sa[7],
+				sa[8], sa[9], sa[10], sa[11], sa[12], sa[13], sa[14], sa[15],
+				ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], da[4], da[5], da[6], da[7],
+				da[8], sa[9], da[10], da[11], sa[12], da[13], da[14], da[15],
+				ntohs(stream->dport),
+				close_reason_str[stream->close_reason]);
+	}
 	if (stream->sndvar->sndbuf) {
 		TRACE_FSTAT("Stream %d: send buffer "
 				"cum_len: %lu, len: %u\n", stream->id, 
@@ -502,6 +553,8 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 #endif /* NETSTAT_PERTHREAD */
 #endif /* NETSTAT */
 
+	UNUSED(sa);
+	UNUSED(da);
 }
 /*---------------------------------------------------------------------------*/
 void 
@@ -524,7 +577,10 @@ DumpStream(mtcp_manager_t mtcp, tcp_stream *stream)
 		sa = (uint8_t *)&stream->saddr6.sin6_addr;
 		da = (uint8_t *)&stream->daddr6.sin6_addr;
 		thread_printf(mtcp, mtcp->log_fp, "========== Stream %u: "
-				"%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u(%u) -> %u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u(%u) ==========\n", stream->id,
+				"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%u)"
+				"-> %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x(%u)"
+				" ==========\n",
+				stream->id,
 				sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], sa[6], sa[7],
 				sa[8], sa[9], sa[10], sa[11], sa[12], sa[13], sa[14], sa[15],
 				ntohs(stream->sport),

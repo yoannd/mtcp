@@ -527,7 +527,11 @@ RunWgetMain(void *arg)
 	struct mtcp_epoll_event *events;
 	int nevents;
 	struct wget_vars *wvars;
+	char daddr_s[INET6_ADDRSTRLEN];
 	int i;
+	socklen_t sockaddr_size = use_ipv6 ?
+			sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	void* daddr_p;
 
 	struct timeval cur_tv, prev_tv;
 	uint64_t cur_ts, prev_ts;
@@ -553,8 +557,13 @@ RunWgetMain(void *arg)
 	}
 	ctx->target = n;
 
-	fprintf(stderr, "Thread %d handles %d flows.\n", core, n);
 
+	daddr_p = use_ipv6 ?
+			(void*)&((struct sockaddr_in6*)&daddr)->sin6_addr :
+			(void*)&((struct sockaddr_in*)&daddr)->sin_addr;
+	fprintf(stderr, "Thread %d handles %d flows. connecting to %s:%u\n",
+				core, n, inet_ntop(daddr.ss_family, daddr_p, daddr_s, sockaddr_size),
+				ntohs(*dport));
 	/* Initialization */
 	maxevents = max_fds * 3;
 	ep = mtcp_epoll_create(mctx, maxevents);
