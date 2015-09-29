@@ -17,7 +17,11 @@ struct socket_map
 	int socktype;
 	uint32_t opts;
 
-	struct sockaddr_in saddr;
+	union {
+		struct sockaddr_in saddr4;
+		struct sockaddr_in6 saddr6;
+		struct sockaddr saddr;
+	};
 
 	union {
 		struct tcp_stream *stream;

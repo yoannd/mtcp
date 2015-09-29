@@ -25,6 +25,7 @@
 #include "logger.h"
 #include "config.h"
 #include "arp.h"
+#include "nd.h"
 #include "ip_out.h"
 #include "timer.h"
 #include "debug.h"
@@ -799,6 +800,7 @@ RunMainLoop(struct mtcp_thread_context *ctx)
 			ts_prev = ts;
 			if (ctx->cpu == mtcp_master) {
 				ARPTimer(mtcp, ts);
+				NDTimer(mtcp);
 				PrintNetworkStats(mtcp, ts);
 			}
 		}
@@ -918,7 +920,7 @@ InitializeMTCPManager(struct mtcp_thread_context* ctx)
 	for (i = 0; i < CONFIG.max_concurrency; i++) {
 		mtcp->smap[i].id = i;
 		mtcp->smap[i].socktype = MTCP_SOCK_UNUSED;
-		memset(&mtcp->smap[i].saddr, 0, sizeof(struct sockaddr_in));
+		memset(&mtcp->smap[i].saddr, 0, sizeof(struct sockaddr_in6));
 		mtcp->smap[i].stream = NULL;
 		TAILQ_INSERT_TAIL(&mtcp->free_smap, &mtcp->smap[i], free_smap_link);
 	}
@@ -1359,9 +1361,9 @@ mtcp_init(char *config_file)
 
 	if (num_cpus > MAX_CPUS) {
 		TRACE_ERROR("You cannot run mTCP with more than %d cores due "
-			    "to NIC hardware queues restriction. Please disable "
-			    "the last %d cores in your system\n",
-			    MAX_CPUS, num_cpus - MAX_CPUS);
+				"to NIC hardware queues restriction. Please disable "
+				"the last %d cores in your system\n",
+				MAX_CPUS, num_cpus - MAX_CPUS);
 		exit(EXIT_FAILURE);
 	}
 	
@@ -1379,7 +1381,8 @@ mtcp_init(char *config_file)
 	PrintConfiguration();
 
 	/* TODO: this should be fixed */
-	ap = CreateAddressPool(CONFIG.eths[0].ip_addr, 1);
+	ap = CreateAddressPool((struct sockaddr*)&((struct sockaddr_in){
+		.sin_family = AF_INET,.sin_addr.s_addr = CONFIG.eths[0].ip_addr}), 1);
 	if (!ap) {
 		TRACE_CONFIG("Error occured while creating address pool.\n");
 		return -1;

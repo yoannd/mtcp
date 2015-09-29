@@ -155,7 +155,7 @@ ParseSACKOption(tcp_stream *cur_stream,
 #endif /* TCP_OPT_SACK_ENABLED */
 /*---------------------------------------------------------------------------*/
 uint16_t
-TCPCalcChecksum(uint16_t *buf, uint16_t len, uint32_t saddr, uint32_t daddr)
+TCPCalcChecksum(uint16_t *buf, uint16_t len, const struct sockaddr* saddr, const struct sockaddr* daddr)
 {
 	uint32_t sum;
 	uint16_t *w;
@@ -176,8 +176,29 @@ TCPCalcChecksum(uint16_t *buf, uint16_t len, uint32_t saddr, uint32_t daddr)
 		sum += *w & ntohs(0xFF00);
 	
 	// add pseudo header
-	sum += (saddr & 0x0000FFFF) + (saddr >> 16);
-	sum += (daddr & 0x0000FFFF) + (daddr >> 16);
+	if (saddr->sa_family == AF_INET6) {
+		struct sockaddr_in6* saddr6 = (struct sockaddr_in6*)saddr;
+		struct sockaddr_in6* daddr6 = (struct sockaddr_in6*)daddr;
+		nleft = 16;
+		w = (uint16_t*) &saddr6->sin6_addr;
+		while (nleft > 0) {
+			sum += *w++;
+			nleft -= 2;
+		}
+		nleft = 16;
+		w = (uint16_t*) &daddr6->sin6_addr;
+		while (nleft > 0) {
+			sum += *w++;
+			nleft -= 2;
+		}
+	} else if (saddr->sa_family == AF_INET) {
+		struct sockaddr_in* saddr4 = (struct sockaddr_in*)saddr;
+		struct sockaddr_in* daddr4 = (struct sockaddr_in*)daddr;
+		sum += (saddr4->sin_addr.s_addr & 0x0000FFFF) + (saddr4->sin_addr.s_addr >> 16);
+		sum += (daddr4->sin_addr.s_addr & 0x0000FFFF) + (daddr4->sin_addr.s_addr >> 16);
+	} else {
+		assert(0);
+	}
 	sum += htons(len);
 	sum += htons(IPPROTO_TCP);
 	

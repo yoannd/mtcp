@@ -48,8 +48,8 @@ ICMPOutput(struct mtcp_manager *mtcp, uint32_t saddr, uint32_t daddr,
 {
 	struct icmphdr *icmph;
 	
-	icmph = (struct icmphdr *)IPOutputStandalone(mtcp, 
-			IPPROTO_ICMP, 0, saddr, daddr, sizeof(struct icmphdr) + len);
+	icmph = (struct icmphdr *)IPOutputStandalone(mtcp, IPPROTO_ICMP, 0, saddr, daddr,
+			sizeof(struct icmphdr) + len);
 	if (!icmph)
 		return -1;
 	
@@ -76,8 +76,8 @@ ICMPOutput(struct mtcp_manager *mtcp, uint32_t saddr, uint32_t daddr,
 /*----------------------------------------------------------------------------*/
 void
 RequestICMP(mtcp_manager_t mtcp, uint32_t saddr, uint32_t daddr,
-	    uint16_t icmp_id, uint16_t icmp_sequence,
-	    uint8_t *icmpd, uint16_t len)
+		uint16_t icmp_id, uint16_t icmp_sequence,
+		uint8_t *icmpd, uint16_t len)
 {
 	/* send icmp request with given parameters */
 	ICMPOutput(mtcp, saddr, daddr, ICMP_ECHO, 0, ntohs(icmp_id), ntohs(icmp_sequence),
@@ -120,19 +120,19 @@ ProcessICMPPacket(mtcp_manager_t mtcp, struct iphdr *iph, int len)
 		return TRUE;
 	
 	switch (icmph->icmp_type) {
-        case ICMP_ECHO:
+		case ICMP_ECHO:
 		ProcessICMPECHORequest(mtcp, iph, len);
 		break;
 		
-        case ICMP_DEST_UNREACH:
+		case ICMP_DEST_UNREACH:
 		TRACE_INFO("[INFO] ICMP Destination Unreachable message received\n");
 		break;
 		
-        case ICMP_TIME_EXCEEDED:
+		case ICMP_TIME_EXCEEDED:
 		TRACE_INFO("[INFO] ICMP Time Exceeded message received\n");
 		break;
 		
-        default:
+		default:
 		TRACE_INFO("[INFO] Unsupported ICMP message type %x received\n",
 			   icmph->icmp_type);
 		break;

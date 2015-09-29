@@ -18,9 +18,9 @@
 
 /*----------------------------------------------------------------------------*/
 static inline int 
-FilterSYNPacket(mtcp_manager_t mtcp, uint32_t ip, uint16_t port)
+FilterSYNPacket(mtcp_manager_t mtcp, const struct sockaddr *daddr)
 {
-	struct sockaddr_in *addr;
+	struct sockaddr *saddr;
 
 	/* TODO: This listening logic should be revised */
 
@@ -29,38 +29,85 @@ FilterSYNPacket(mtcp_manager_t mtcp, uint32_t ip, uint16_t port)
 		return FALSE;
 	}
 
+	saddr = &mtcp->listener->socket->saddr;
+	/* a listening IPv4 socket cannot accept IPv6 connections,
+	 * but the converse is true */
+	if (saddr->sa_family == AF_INET && daddr->sa_family == AF_INET6) {
+		return FALSE;
+	}
 	/* if not the address we want, drop */
-	addr = &mtcp->listener->socket->saddr;
-	if (addr->sin_port == port) {
-		if (addr->sin_addr.s_addr != INADDR_ANY) {
-			if (ip == addr->sin_addr.s_addr) {
+	if (daddr->sa_family == AF_INET6) {
+		struct sockaddr_in6* saddr6 = (struct sockaddr_in6*) saddr;
+		struct sockaddr_in6* daddr6 = (struct sockaddr_in6*) daddr;
+		if (saddr6->sin6_port == daddr6->sin6_port) {
+			if (!memcmp(&daddr6->sin6_addr, &saddr6->sin6_addr, sizeof(struct in6_addr))) {
 				return TRUE;
 			}
-			return FALSE;
-		} else {
-			int i;
+			if (!memcmp(&saddr6->sin6_addr, &in6addr_any, sizeof(struct in6_addr))) {
+				int i;
+				for (i = 0; i < CONFIG.eths_num; i++) {
+					if (!memcmp(&daddr6->sin6_addr, &CONFIG.eths[i].ip6_addr, sizeof(struct in6_addr))) {
+						return TRUE;
+					}
+				}
+				return FALSE;
+			}
+		}
 
-			for (i = 0; i < CONFIG.eths_num; i++) {
-				if (ip == CONFIG.eths[i].ip_addr) {
-					return TRUE;
+	} else if (daddr->sa_family == AF_INET) {
+		if (saddr->sa_family == AF_INET) {
+			/* IPv4 client connecting to IPv4 listening socket */
+			struct sockaddr_in* saddr4 = (struct sockaddr_in*) saddr;
+			struct sockaddr_in* daddr4 = (struct sockaddr_in*) daddr;
+			if (saddr4->sin_port == daddr4->sin_port) {
+				if (saddr4->sin_addr.s_addr != INADDR_ANY) {
+					if (daddr4->sin_addr.s_addr == saddr4->sin_addr.s_addr) {
+						return TRUE;
+					}
+					return FALSE;
+				} else {
+					int i;
+
+					for (i = 0; i < CONFIG.eths_num; i++) {
+						if (daddr4->sin_addr.s_addr == CONFIG.eths[i].ip_addr) {
+							return TRUE;
+						}
+					}
+					return FALSE;
 				}
 			}
-			return FALSE;
+		} else if (saddr->sa_family == AF_INET6) {
+			/* IPv4 client connecting to IPv6 listening socket */
+			struct sockaddr_in6* saddr6 = (struct sockaddr_in6*) saddr;
+			struct sockaddr_in* daddr4 = (struct sockaddr_in*) daddr;
+			if (saddr6->sin6_port == daddr4->sin_port) {
+				if (!memcmp(&saddr6->sin6_addr, &in6addr_any, sizeof(struct in6_addr))) {
+					int i;
+					for (i = 0; i < CONFIG.eths_num; i++) {
+						if (daddr4->sin_addr.s_addr == CONFIG.eths[i].ip_addr) {
+							return TRUE;
+						}
+					}
+					return FALSE;
+				}
+			}
 		}
+
+	} else {
+		assert(0);
 	}
 
 	return FALSE;
 }
 /*----------------------------------------------------------------------------*/
 static inline tcp_stream *
-HandlePassiveOpen(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *iph, 
-		const struct tcphdr *tcph, uint32_t seq, uint16_t window)
+HandlePassiveOpen(mtcp_manager_t mtcp, uint32_t cur_ts, const struct sockaddr* saddr,
+		const struct sockaddr* daddr, const struct tcphdr *tcph, uint32_t seq, uint16_t window)
 {
 	tcp_stream *cur_stream = NULL;
 
 	/* create new stream and add to flow hash table */
-	cur_stream = CreateTCPStream(mtcp, NULL, MTCP_SOCK_STREAM, 
-			iph->daddr, tcph->dest, iph->saddr, tcph->source);
+	cur_stream = CreateTCPStream(mtcp, NULL, MTCP_SOCK_STREAM, saddr, daddr);
 	if (!cur_stream) {
 		TRACE_ERROR("INFO: Could not allocate tcp_stream!\n");
 		return FALSE;
@@ -95,8 +142,8 @@ HandleActiveOpen(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint32_t cur_ts,
 	return TRUE;
 }
 /*----------------------------------------------------------------------------*/
-/* ValidateSequence: validates sequence number of the segment                 */
-/* Return: TRUE if acceptable, FALSE if not acceptable                        */
+/* ValidateSequence: validates sequence number of the segment				 */
+/* Return: TRUE if acceptable, FALSE if not acceptable						*/
 /*----------------------------------------------------------------------------*/
 static inline int
 ValidateSequence(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint32_t cur_ts, 
@@ -530,9 +577,9 @@ ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint32_t cur_ts,
 	UNUSED(ret);
 }
 /*----------------------------------------------------------------------------*/
-/* ProcessTCPPayload: merges TCP payload using receive ring buffer            */
-/* Return: TRUE (1) in normal case, FALSE (0) if immediate ACK is required    */
-/* CAUTION: should only be called at ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2      */
+/* ProcessTCPPayload: merges TCP payload using receive ring buffer			*/
+/* Return: TRUE (1) in normal case, FALSE (0) if immediate ACK is required	*/
+/* CAUTION: should only be called at ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2	  */
 /*----------------------------------------------------------------------------*/
 static inline int 
 ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream, 
@@ -610,8 +657,8 @@ ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 }
 /*----------------------------------------------------------------------------*/
 static inline tcp_stream *
-CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *iph, 
-		int ip_len, const struct tcphdr* tcph, uint32_t seq, uint32_t ack_seq,
+CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct sockaddr* saddr,
+		const struct sockaddr* daddr, const struct tcphdr* tcph, uint32_t seq, uint32_t ack_seq,
 		int payloadlen, uint16_t window)
 {
 	tcp_stream *cur_stream;
@@ -619,14 +666,10 @@ CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *i
 	
 	if (tcph->syn && !tcph->ack) {
 		/* handle the SYN */
-		ret = FilterSYNPacket(mtcp, iph->daddr, tcph->dest);
+		ret = FilterSYNPacket(mtcp, saddr);
 		if (!ret) {
 			TRACE_DBG("Refusing SYN packet.\n");
-#ifdef DBGMSG
-			DumpIPPacket(mtcp, iph, ip_len);
-#endif
-			SendTCPPacketStandalone(mtcp, 
-					iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+			SendTCPPacketStandalone(mtcp, saddr, daddr,
 					0, seq + payloadlen + 1, 0, TCP_FLAG_RST | TCP_FLAG_ACK, 
 					NULL, 0, cur_ts, 0);
 
@@ -634,15 +677,10 @@ CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *i
 		}
 
 		/* now accept the connection */
-		cur_stream = HandlePassiveOpen(mtcp, 
-				cur_ts, iph, tcph, seq, window);
+		cur_stream = HandlePassiveOpen(mtcp, cur_ts, saddr, daddr, tcph, seq, window);
 		if (!cur_stream) {
 			TRACE_DBG("Not available space in flow pool.\n");
-#ifdef DBGMSG
-			DumpIPPacket(mtcp, iph, ip_len);
-#endif
-			SendTCPPacketStandalone(mtcp, 
-					iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+			SendTCPPacketStandalone(mtcp, saddr, daddr,
 					0, seq + payloadlen + 1, 0, TCP_FLAG_RST | TCP_FLAG_ACK, 
 					NULL, 0, cur_ts, 0);
 
@@ -652,16 +690,10 @@ CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *i
 		return cur_stream;
 	} else if (tcph->rst) {
 		TRACE_DBG("Reset packet comes\n");
-#ifdef DBGMSG
-		DumpIPPacket(mtcp, iph, ip_len);
-#endif
 		/* for the reset packet, just discard */
 		return NULL;
 	} else {
 		TRACE_DBG("Weird packet comes.\n");
-#ifdef DBGMSG
-		DumpIPPacket(mtcp, iph, ip_len);
-#endif
 		/* TODO: for else, discard and send a RST */
 		/* if the ACK bit is off, respond with seq 0: 
 		   <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
@@ -669,12 +701,10 @@ CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *i
 		   <SEQ=SEG.ACK><CTL=RST>
 		   */
 		if (tcph->ack) {
-			SendTCPPacketStandalone(mtcp, 
-					iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+			SendTCPPacketStandalone(mtcp, saddr, daddr,
 					ack_seq, 0, 0, TCP_FLAG_RST, NULL, 0, cur_ts, 0);
 		} else {
-			SendTCPPacketStandalone(mtcp, 
-					iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+			SendTCPPacketStandalone(mtcp, saddr, daddr,
 					0, seq + payloadlen, 0, TCP_FLAG_RST | TCP_FLAG_ACK, 
 					NULL, 0, cur_ts, 0);
 		}
@@ -699,8 +729,8 @@ Handle_TCP_ST_LISTEN (mtcp_manager_t mtcp, uint32_t cur_ts,
 }
 /*----------------------------------------------------------------------------*/
 static inline void 
-Handle_TCP_ST_SYN_SENT (mtcp_manager_t mtcp, uint32_t cur_ts, 
-		tcp_stream* cur_stream, const struct iphdr* iph, struct tcphdr* tcph,
+Handle_TCP_ST_SYN_SENT (mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream* cur_stream,
+		const struct sockaddr* saddr, const struct sockaddr* daddr, struct tcphdr* tcph,
 		uint32_t seq, uint32_t ack_seq, int payloadlen, uint16_t window)
 {
 	/* when active open */
@@ -709,8 +739,7 @@ Handle_TCP_ST_SYN_SENT (mtcp_manager_t mtcp, uint32_t cur_ts,
 		if (TCP_SEQ_LEQ(ack_seq, cur_stream->sndvar->iss) || 
 				TCP_SEQ_GT(ack_seq, cur_stream->snd_nxt)) {
 			if (!tcph->rst) {
-				SendTCPPacketStandalone(mtcp, 
-						iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+				SendTCPPacketStandalone(mtcp, daddr, saddr,
 						ack_seq, 0, 0, TCP_FLAG_RST, NULL, 0, cur_ts, 0);
 			}
 			return;
@@ -750,8 +779,7 @@ Handle_TCP_ST_SYN_SENT (mtcp_manager_t mtcp, uint32_t cur_ts,
 				RaiseWriteEvent(mtcp, cur_stream);
 			} else {
 				TRACE_STATE("Stream %d: ESTABLISHED, but no socket\n", cur_stream->id);
-				SendTCPPacketStandalone(mtcp, 
-						iph->daddr, tcph->dest, iph->saddr, tcph->source, 
+				SendTCPPacketStandalone(mtcp, daddr, saddr,
 						0, seq + payloadlen + 1, 0, TCP_FLAG_RST | TCP_FLAG_ACK, 
 						NULL, 0, cur_ts, 0);
 				cur_stream->close_reason = TCP_ACTIVE_CLOSE;
@@ -904,8 +932,8 @@ Handle_TCP_ST_CLOSE_WAIT (mtcp_manager_t mtcp, uint32_t cur_ts,
 }
 /*----------------------------------------------------------------------------*/
 static inline void 
-Handle_TCP_ST_LAST_ACK (mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *iph,
-		int ip_len, tcp_stream* cur_stream, struct tcphdr* tcph, 
+Handle_TCP_ST_LAST_ACK (mtcp_manager_t mtcp, uint32_t cur_ts, const struct sockaddr* saddr,
+		const struct sockaddr* daddr, tcp_stream* cur_stream, struct tcphdr* tcph,
 		uint32_t seq, uint32_t ack_seq, int payloadlen, uint16_t window) 
 {
 
@@ -927,9 +955,6 @@ Handle_TCP_ST_LAST_ACK (mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr
 			/* this is not ack for FIN, ignore */
 			TRACE_DBG("Stream %d (TCP_ST_LAST_ACK): "
 					"No FIN sent yet.\n", cur_stream->id);
-#ifdef DBGMSG
-			DumpIPPacket(mtcp, iph, ip_len);
-#endif
 #if DUMP_STREAM
 			DumpStream(mtcp, cur_stream);
 			DumpControlList(mtcp, mtcp->n_sender[0]);
@@ -1134,27 +1159,27 @@ Handle_TCP_ST_CLOSING (mtcp_manager_t mtcp, uint32_t cur_ts,
 }
 /*----------------------------------------------------------------------------*/
 int
-ProcessTCPPacket(mtcp_manager_t mtcp, 
-		uint32_t cur_ts, const struct iphdr *iph, int ip_len)
+ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, struct tcphdr* tcph, int tcplen,
+		const struct sockaddr* saddr, const struct sockaddr* daddr)
 {
-	struct tcphdr* tcph = (struct tcphdr *) ((u_char *)iph + (iph->ihl << 2));
-	uint8_t *payload    = (uint8_t *)tcph + (tcph->doff << 2);
-	int payloadlen = ip_len - (payload - (u_char *)iph);
+	uint8_t *payload	= (uint8_t *)tcph + (tcph->doff << 2);
+	int payloadlen = tcplen - (tcph->doff << 2);
 	tcp_stream s_stream;
 	tcp_stream *cur_stream = NULL;
 	uint32_t seq = ntohl(tcph->seq);
 	uint32_t ack_seq = ntohl(tcph->ack_seq);
 	uint16_t window = ntohs(tcph->window);
 	uint16_t check;
+	socklen_t sockaddr_size = saddr->sa_family == AF_INET6 ?
+			sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
 	int ret;
 
 	/* Check ip packet invalidation */	
-	if (ip_len < ((iph->ihl + tcph->doff) << 2))
+	if (payloadlen < 0)
 		return ERROR;
 
 #if VERIFY_RX_CHECKSUM
-	check = TCPCalcChecksum((uint16_t *)tcph, 
-			(tcph->doff << 2) + payloadlen, iph->saddr, iph->daddr);
+	check = TCPCalcChecksum((uint16_t *)tcph, tcplen, saddr, daddr);
 	if (check) {
 		tcph->check = 0;
 		TRACE_DBG("Checksum Error: Original: 0x%04x, calculated: 0x%04x\n", 
@@ -1164,14 +1189,14 @@ ProcessTCPPacket(mtcp_manager_t mtcp,
 	}
 #endif
 
-	s_stream.saddr = iph->daddr;
-	s_stream.sport = tcph->dest;
-	s_stream.daddr = iph->saddr;
+	memcpy(&s_stream.saddr, daddr, sockaddr_size);
+	memcpy(&s_stream.daddr, saddr, sockaddr_size);
 	s_stream.dport = tcph->source;
+	s_stream.sport = tcph->dest;
 
 	if (!(cur_stream = HTSearch(mtcp->tcp_flow_table, &s_stream))) {
 		/* not found in flow table */
-		cur_stream = CreateNewFlowHTEntry(mtcp, cur_ts, iph, ip_len, tcph, 
+		cur_stream = CreateNewFlowHTEntry(mtcp, cur_ts, &s_stream.saddr, &s_stream.daddr, tcph,
 				seq, ack_seq, payloadlen, window);
 		if (!cur_stream)
 			return TRUE;
@@ -1221,7 +1246,7 @@ ProcessTCPPacket(mtcp_manager_t mtcp,
 		break;
 
 	case TCP_ST_SYN_SENT:
-		Handle_TCP_ST_SYN_SENT(mtcp, cur_ts, cur_stream, iph, tcph, 
+		Handle_TCP_ST_SYN_SENT(mtcp, cur_ts, cur_stream, saddr, daddr, tcph,
 				seq, ack_seq, payloadlen, window);
 		break;
 
@@ -1244,7 +1269,7 @@ ProcessTCPPacket(mtcp_manager_t mtcp,
 		break;
 
 	case TCP_ST_LAST_ACK:
-		Handle_TCP_ST_LAST_ACK(mtcp, cur_ts, iph, ip_len, cur_stream, tcph, 
+		Handle_TCP_ST_LAST_ACK(mtcp, cur_ts, saddr, daddr, cur_stream, tcph,
 				seq, ack_seq, payloadlen, window);
 		break;
 	

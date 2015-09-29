@@ -242,7 +242,7 @@ mtcp_socket_ioctl(mctx_t mctx, int sockid, int request, void *argp)
 		}
 		rbuf = cur_stream->rcvvar->rcvbuf;
 		if (rbuf) {
-		        *(int *)argp = rbuf->merged_len;
+				*(int *)argp = rbuf->merged_len;
 		} else {
 			*(int *)argp = 0;
 		}
@@ -266,7 +266,7 @@ mtcp_socket(mctx_t mctx, int domain, int type, int protocol)
 		return -1;
 	}
 
-	if (domain != AF_INET) {
+	if (domain != AF_INET && domain != AF_INET6) {
 		errno = EAFNOSUPPORT;
 		return -1;
 	}
@@ -330,17 +330,23 @@ mtcp_bind(mctx_t mctx, int sockid,
 		return -1;
 	}
 
-	/* we only allow bind() for AF_INET address */
-	if (addr->sa_family != AF_INET || addrlen < sizeof(struct sockaddr_in)) {
+	if (addr->sa_family != AF_INET && addr->sa_family != AF_INET6) {
+		TRACE_API("Socket %d: invalid domain!\n", sockid);
+		errno = EAFNOSUPPORT;
+		return -1;
+	}
+
+	socklen_t sockaddr_size = addr->sa_family == AF_INET6 ?
+							sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	if (addrlen < sockaddr_size) {
 		TRACE_API("Socket %d: invalid argument!\n", sockid);
 		errno = EINVAL;
 		return -1;
 	}
-
 	/* TODO: validate whether the address is already being used */
 
 	addr_in = (struct sockaddr_in *)addr;
-	mtcp->smap[sockid].saddr = *addr_in;
+	memcpy(&mtcp->smap[sockid].saddr, addr_in, MIN(addrlen, sizeof(struct sockaddr_in6)));
 	mtcp->smap[sockid].opts |= MTCP_ADDR_BIND;
 
 	return 0;
@@ -484,19 +490,18 @@ mtcp_accept(mctx_t mctx, int sockid, struct sockaddr *addr, socklen_t *addrlen)
 	TRACE_API("Stream %d accepted.\n", accepted->id);
 
 	if (addr && addrlen) {
-		struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
-		addr_in->sin_family = AF_INET;
-		addr_in->sin_port = accepted->dport;
-		addr_in->sin_addr.s_addr = accepted->daddr;
-		*addrlen = sizeof(struct sockaddr_in);
+		socklen_t size = accepted->daddr.sa_family == AF_INET6 ?
+				sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+		memcpy(addr, &accepted->daddr, MIN(size, *addrlen));
+		*addrlen = size;
 	}
 
 	return accepted->socket->id;
 }
 /*----------------------------------------------------------------------------*/
 int 
-mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr, 
-		in_addr_t daddr, in_addr_t dport)
+mtcp_init_rss(mctx_t mctx, const struct sockaddr* saddr_base, int num_addr,
+		const struct sockaddr* daddr)
 {
 	mtcp_manager_t mtcp;
 	addr_pool_t ap;
@@ -506,17 +511,36 @@ mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr,
 		return -1;
 	}
 
-	if (saddr_base == INADDR_ANY) {
-		int nif_out;
-
-		/* for the INADDR_ANY, find the output interface for the destination
-		   and set the saddr_base as the ip address of the output interface */
-		nif_out = GetOutputInterface(daddr);
-		saddr_base = CONFIG.eths[nif_out].ip_addr;
+	if (saddr_base->sa_family != AF_INET && saddr_base->sa_family != AF_INET6) {
+		errno = EAFNOSUPPORT;
+		return -1;
 	}
 
-	ap = CreateAddressPoolPerCore(mctx->cpu, num_cpus, 
-			saddr_base, num_addr, daddr, dport);
+	if (saddr_base->sa_family != daddr->sa_family) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (saddr_base->sa_family == AF_INET) {
+		struct sockaddr_in* saddr_base4 = (struct sockaddr_in*)saddr_base;
+		if (saddr_base4->sin_addr.s_addr == INADDR_ANY) {
+			/* for the INADDR_ANY, find the output interface for the destination
+			   and set the saddr_base as the ip address of the output interface */
+			int nif_out = GetOutputInterface(daddr);
+			saddr_base4->sin_addr.s_addr = CONFIG.eths[nif_out].ip_addr;
+		}
+	}
+
+	if (saddr_base->sa_family == AF_INET6) {
+		struct sockaddr_in6* saddr_base6 = (struct sockaddr_in6*)saddr_base;
+		if (!memcmp(&saddr_base6->sin6_addr, &in6addr_any, sizeof(struct in6_addr))) {
+			int nif_out = GetOutputInterface(daddr);
+			saddr_base6->sin6_addr = CONFIG.eths[nif_out].ip6_addr;
+		}
+	}
+
+	ap = CreateAddressPoolPerCore(mctx->cpu, num_cpus,
+			saddr_base, num_addr, daddr);
 	if (!ap) {
 		errno = ENOMEM;
 		return -1;
@@ -529,14 +553,11 @@ mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr,
 /*----------------------------------------------------------------------------*/
 int 
 mtcp_connect(mctx_t mctx, int sockid, 
-		const struct sockaddr *addr, socklen_t addrlen)
+		const struct sockaddr *daddr, socklen_t addrlen)
 {
 	mtcp_manager_t mtcp;
 	socket_map_t socket;
-	tcp_stream *cur_stream;
-	struct sockaddr_in *addr_in;
-	in_addr_t dip;
-	in_port_t dport;
+	tcp_stream *cur_stream = NULL;
 	int is_dyn_bound = FALSE;
 	int ret;
 
@@ -563,16 +584,23 @@ mtcp_connect(mctx_t mctx, int sockid,
 		return -1;
 	}
 
-	if (!addr) {
+	if (!daddr) {
 		TRACE_API("Socket %d: empty address!\n", sockid);
 		errno = EFAULT;
 		return -1;
 	}
 
-	/* we only allow bind() for AF_INET address */
-	if (addr->sa_family != AF_INET || addrlen < sizeof(struct sockaddr_in)) {
-		TRACE_API("Socket %d: invalid argument!\n", sockid);
+	if (daddr->sa_family != AF_INET && daddr->sa_family != AF_INET6) {
+		TRACE_API("Socket %d: invalid domain!\n", sockid);
 		errno = EAFNOSUPPORT;
+		return -1;
+	}
+
+	socklen_t sockaddr_size = daddr->sa_family == AF_INET6 ?
+							sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	if (addrlen < sockaddr_size) {
+		TRACE_API("Socket %d: invalid argument!\n", sockid);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -587,18 +615,13 @@ mtcp_connect(mctx_t mctx, int sockid,
 		return -1;
 	}
 
-	addr_in = (struct sockaddr_in *)addr;
-	dip = addr_in->sin_addr.s_addr;
-	dport = addr_in->sin_port;
-
 	/* address binding */
 	if (socket->opts & MTCP_ADDR_BIND) {
 		int rss_core;
 		uint8_t endian_check = (current_iomodule_func == &dpdk_module_func) ?
-			0 : 1;
-	
-		rss_core = GetRSSCPUCore(socket->saddr.sin_addr.s_addr, dip, 
-					 socket->saddr.sin_port, dport, num_queues, endian_check);
+				0 : 1;
+
+		rss_core = GetRSSCPUCore(&socket->saddr, daddr, num_queues, endian_check);
 
 		if (rss_core != mctx->cpu) {
 			errno = EINVAL;
@@ -606,11 +629,11 @@ mtcp_connect(mctx_t mctx, int sockid,
 		}
 	} else {
 		if (mtcp->ap) {
-			ret = FetchAddress(mtcp->ap, 
-					mctx->cpu, num_queues, addr_in, &socket->saddr);
+			ret = FetchAddress(mtcp->ap,
+					mctx->cpu, num_queues, daddr, &socket->saddr);
 		} else {
-			ret = FetchAddress(ap, 
-					mctx->cpu, num_queues, addr_in, &socket->saddr);
+			ret = FetchAddress(ap,
+					mctx->cpu, num_queues, daddr, &socket->saddr);
 		}
 		if (ret < 0) {
 			errno = EAGAIN;
@@ -620,8 +643,9 @@ mtcp_connect(mctx_t mctx, int sockid,
 		is_dyn_bound = TRUE;
 	}
 
-	cur_stream = CreateTCPStream(mtcp, socket, socket->socktype, 
-			socket->saddr.sin_addr.s_addr, socket->saddr.sin_port, dip, dport);
+	cur_stream = CreateTCPStream(mtcp, socket, socket->socktype,
+			&socket->saddr, daddr);
+
 	if (!cur_stream) {
 		TRACE_ERROR("Socket %d: failed to create tcp_stream!\n", sockid);
 		errno = ENOMEM;

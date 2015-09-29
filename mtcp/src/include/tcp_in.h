@@ -116,9 +116,10 @@ ProcessTCPUplink(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream,
 		uint8_t *payload, int payloadlen, uint32_t window);
 
 int
-ProcessTCPPacket(struct mtcp_manager *mtcp, uint32_t cur_ts, 
-					const struct iphdr* iph, int ip_len);
+ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, struct tcphdr* tcph,
+		int tcplen, const struct sockaddr* saddr, const struct sockaddr* daddr);
+
 uint16_t 
-TCPCalcChecksum(uint16_t *buf, uint16_t len, uint32_t saddr, uint32_t daddr);
+TCPCalcChecksum(uint16_t *buf, uint16_t len, const struct sockaddr* saddr, const struct sockaddr* daddr);
 
 #endif /* __TCP_IN_H_ */

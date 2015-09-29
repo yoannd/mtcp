@@ -357,7 +357,8 @@ CreateListeningSocket(struct thread_context *ctx)
 {
 	int listener;
 	struct mtcp_epoll_event ev;
-	struct sockaddr_in saddr;
+	struct sockaddr_in6 saddr;
+	struct mtcp_conf conf;
 	int ret;
 
 	/* create socket and set it as nonblocking */
@@ -372,19 +373,21 @@ CreateListeningSocket(struct thread_context *ctx)
 		return -1;
 	}
 
-	/* bind to port 80 */
-	saddr.sin_family = AF_INET;
-	saddr.sin_addr.s_addr = INADDR_ANY;
-	saddr.sin_port = htons(80);
+	/* bind to port 80, dual-stack socket */
+	saddr.sin6_family = AF_INET6;
+	saddr.sin6_addr = in6addr_any;
+	saddr.sin6_port = htons(80);
+
 	ret = mtcp_bind(ctx->mctx, listener, 
-			(struct sockaddr *)&saddr, sizeof(struct sockaddr_in));
+			(struct sockaddr *)&saddr, sizeof(struct sockaddr_in6));
 	if (ret < 0) {
 		TRACE_ERROR("Failed to bind to the listening socket!\n");
 		return -1;
 	}
 
 	/* listen (backlog: 4K) */
-	ret = mtcp_listen(ctx->mctx, listener, 4096);
+	mtcp_getconf(&conf);
+	ret = mtcp_listen(ctx->mctx, listener, MIN(4096, conf.max_concurrency));
 	if (ret < 0) {
 		TRACE_ERROR("mtcp_listen() failed!\n");
 		return -1;
@@ -548,7 +551,7 @@ main(int argc, char **argv)
 	core_limit = num_cores;
 
 	if (argc < 2) {
-		TRACE_ERROR("$%s directory_to_service\n", argv[0]);
+		TRACE_ERROR("$%s directory_to_service [--use-ipv6]\n", argv[0]);
 		return FALSE;
 	}
 

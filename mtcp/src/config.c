@@ -14,6 +14,7 @@
 #include "config.h"
 #include "tcp_in.h"
 #include "arp.h"
+#include "nd.h"
 #include "debug.h"
 /* for setting up io modules */
 #include "io_module.h"
@@ -61,8 +62,11 @@ EnrollRouteTableEntry(char *optstr)
 	char *dev;
 	int ifidx;
 	int ridx;
-	int i;
-	char * saveptr;
+	int i, ret;
+	int use_ipv6 = 0;
+	char *saveptr;
+	in_addr_t addr4;
+	struct in6_addr addr6;
 
 	daddr_s = strtok_r(optstr, "/", &saveptr);
 	prefix = strtok_r(NULL, " ", &saveptr);
@@ -95,18 +99,40 @@ EnrollRouteTableEntry(char *optstr)
 		}
 	}
 
-	ridx = CONFIG.routes++;
-	CONFIG.rtable[ridx].daddr = inet_addr(daddr_s);
-	CONFIG.rtable[ridx].prefix = atoi(prefix);
-	if (CONFIG.rtable[ridx].prefix > 32 || CONFIG.rtable[ridx].prefix < 0) {
-		TRACE_CONFIG("Prefix length should be between 0 - 32.\n");
-		exit(4);
+	/* Detect whether address is IPv4 or IPv6 */
+	ret = inet_pton(AF_INET, daddr_s, &addr4);
+	if (ret == 0) {
+		ret = inet_pton(AF_INET6, daddr_s, &addr6);
+		if (ret == 0) {
+			TRACE_CONFIG("Invalid address %s\n", daddr_s);
+			return;
+		}
+		use_ipv6 = 1;
 	}
-	
-	CONFIG.rtable[ridx].mask = MaskFromPrefix(CONFIG.rtable[ridx].prefix);
-	CONFIG.rtable[ridx].masked = 
-			CONFIG.rtable[ridx].daddr & CONFIG.rtable[ridx].mask;
-	CONFIG.rtable[ridx].nif = ifidx;
+
+	if (use_ipv6) {
+		ridx = CONFIG.routes6++;
+		CONFIG.rtable6[ridx].daddr = addr6;
+		CONFIG.rtable6[ridx].prefix = atoi(prefix);
+		if (CONFIG.rtable6[ridx].prefix > 128 || CONFIG.rtable6[ridx].prefix < 0) {
+			TRACE_CONFIG("Prefix length should be between 0 - 128.\n");
+			exit(4);
+		}
+		CONFIG.rtable6[ridx].nif = ifidx;
+	} else {
+		ridx = CONFIG.routes++;
+		CONFIG.rtable[ridx].daddr = inet_addr(daddr_s);
+		CONFIG.rtable[ridx].prefix = atoi(prefix);
+		if (CONFIG.rtable[ridx].prefix > 32 || CONFIG.rtable[ridx].prefix < 0) {
+			TRACE_CONFIG("Prefix length should be between 0 - 32.\n");
+			exit(4);
+		}
+
+		CONFIG.rtable[ridx].mask = MaskFromPrefix(CONFIG.rtable[ridx].prefix);
+		CONFIG.rtable[ridx].masked =
+				CONFIG.rtable[ridx].daddr & CONFIG.rtable[ridx].mask;
+		CONFIG.rtable[ridx].nif = ifidx;
+	}
 }
 /*----------------------------------------------------------------------------*/
 int 
@@ -236,7 +262,7 @@ ParseIPAddress(uint32_t *ip_addr, char *ip_str)
 int
 SetRoutingTable() 
 {
-	int i, ridx;
+	int i, j, ridx;
 	unsigned int c;
 
 	CONFIG.routes = 0;
@@ -261,6 +287,31 @@ SetRoutingTable()
 		CONFIG.rtable[ridx].mask = CONFIG.eths[i].netmask;
 		CONFIG.rtable[ridx].masked = CONFIG.rtable[ridx].daddr;
 		CONFIG.rtable[ridx].nif = CONFIG.eths[ridx].ifindex;
+	}
+
+	/* IPv6 routing table setup */
+	CONFIG.routes6 = 0;
+	CONFIG.rtable6 = (struct route_table6*)
+			calloc(MAX_DEVICES, sizeof(struct route_table));
+	if (!CONFIG.rtable6) {
+		perror("calloc");
+		exit(EXIT_FAILURE);
+	}
+
+	/* default IPv6 routing table */
+	for (i = 0; i < CONFIG.eths_num; i++) {
+
+		ridx = CONFIG.routes6++;
+		CONFIG.rtable6[ridx].daddr = CONFIG.eths[i].ip6_addr;
+		CONFIG.rtable6[ridx].prefix = 0;
+		for (j = 0; j < 4; j++) {
+			c = CONFIG.eths[i].ip6_netmask.s6_addr32[j];
+			while (c) {
+				CONFIG.rtable6[ridx].prefix++;
+				c >>= 1;
+			}
+		}
+		CONFIG.rtable6[ridx].nif = CONFIG.eths[ridx].ifindex;
 	}
 
 	/* set additional routing table */
@@ -309,9 +360,10 @@ EnrollARPTableEntry(char *optstr)
 	char *daddr_s;		/* destination MAC string */
 
 	int prefix;
-	uint32_t dip_mask;
-	int idx;
-
+	int idx, ret;
+	in_addr_t addr4;
+	struct in6_addr addr6;
+	int use_ipv6 = 0;
 	char *saveptr;
 
 	dip_s = strtok_r(optstr, "/", &saveptr);
@@ -322,24 +374,43 @@ EnrollARPTableEntry(char *optstr)
 	assert(prefix_s != NULL);
 	assert(daddr_s != NULL);
 
-	if (prefix_s == NULL)
-		prefix = 32;
-	else
-		prefix = atoi(prefix_s);
-
-	if (prefix > 32 || prefix < 0) {
-		TRACE_CONFIG("Prefix length should be between 0 - 32.\n");
-		return;
+	/* Detect whether address is IPv4 or IPv6 */
+	ret = inet_pton(AF_INET, dip_s, &addr4);
+	if (ret == 0) {
+		ret = inet_pton(AF_INET6, dip_s, &addr6);
+		if (ret == 0) {
+			TRACE_CONFIG("Invalid address %s\n", dip_s);
+			return;
+		}
+		use_ipv6 = 1;
 	}
-	
-	idx = CONFIG.arp.entries++;
-	CONFIG.arp.entry[idx].prefix = prefix;
-	ParseIPAddress(&CONFIG.arp.entry[idx].ip, dip_s);
-	ParseMACAddress(CONFIG.arp.entry[idx].haddr, daddr_s);
-	
-	dip_mask = MaskFromPrefix(prefix);
-	CONFIG.arp.entry[idx].ip_mask = dip_mask;
-	CONFIG.arp.entry[idx].ip_masked = CONFIG.arp.entry[idx].ip & dip_mask;
+
+	if (use_ipv6) {
+		prefix = prefix_s ? atoi(prefix_s) : 128;
+		if (prefix > 128 || prefix < 0) {
+			TRACE_CONFIG("Prefix length should be between 0 - 128.\n");
+			return;
+		}
+		idx = CONFIG.nd.entries++;
+		CONFIG.nd.entry[idx].ip = addr6;
+		CONFIG.nd.entry[idx].prefix = prefix;
+		ParseMACAddress(CONFIG.nd.entry[idx].haddr, daddr_s);
+	} else {
+		prefix = prefix_s ? atoi(prefix_s) : 32;
+
+		if (prefix > 32 || prefix < 0) {
+			TRACE_CONFIG("Prefix length should be between 0 - 32.\n");
+			return;
+		}
+		idx = CONFIG.arp.entries++;
+		CONFIG.arp.entry[idx].prefix = prefix;
+		CONFIG.arp.entry[idx].ip = addr4;
+		ParseMACAddress(CONFIG.arp.entry[idx].haddr, daddr_s);
+
+		uint32_t dip_mask = MaskFromPrefix(prefix);
+		CONFIG.arp.entry[idx].ip_mask = dip_mask;
+		CONFIG.arp.entry[idx].ip_masked = CONFIG.arp.entry[idx].ip & dip_mask;
+	}
 	
 /*
 	int i, cnt;
@@ -367,6 +438,7 @@ LoadARPTable()
 	TRACE_CONFIG("Loading ARP table from : %s\n", arp_file);
 
 	InitARPTable();
+	InitNDTable();
 
 	fc = fopen(arp_file, "r");
 	if (fc == NULL) {
@@ -615,7 +687,7 @@ PrintConfiguration()
 			CONFIG.max_concurrency);
 	if (CONFIG.multi_process == 1) {
 		TRACE_CONFIG("Multi-process support is enabled and current core is: %d\n",
-			     CONFIG.multi_process_curr_core);
+				 CONFIG.multi_process_curr_core);
 		if (CONFIG.multi_process_is_master == 1)
 			TRACE_CONFIG("Current core is master (for multi-process)\n");
 		else

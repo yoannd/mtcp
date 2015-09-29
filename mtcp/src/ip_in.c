@@ -42,7 +42,16 @@ ProcessIPv4Packet(mtcp_manager_t mtcp, uint32_t cur_ts,
 	
 	switch (iph->protocol) {
 		case IPPROTO_TCP:
-			return ProcessTCPPacket(mtcp, cur_ts, iph, ip_len);
+		{
+			struct tcphdr* tcph = (struct tcphdr *) ((u_char *)iph + (iph->ihl << 2));
+			int tcplen = ip_len - (iph->ihl << 2);
+			struct sockaddr_in saddr, daddr;
+			saddr.sin_family = AF_INET;
+			saddr.sin_addr.s_addr = iph->saddr;
+			daddr.sin_family = AF_INET;
+			daddr.sin_addr.s_addr = iph->daddr;
+			return ProcessTCPPacket(mtcp, cur_ts, tcph, tcplen, (struct sockaddr*)&saddr, (struct sockaddr*)&daddr);
+		}
 		case IPPROTO_ICMP:
 			return ProcessICMPPacket(mtcp, iph, ip_len);
 		default:

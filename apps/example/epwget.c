@@ -30,7 +30,7 @@
 #define HTTP_HEADER_LEN 1024
 
 #define IP_RANGE 1
-#define MAX_IP_STR_LEN 16
+#define MAX_IP_STR_LEN INET6_ADDRSTRLEN
 
 #define BUF_SIZE (8*1024)
 
@@ -68,9 +68,10 @@ static char outfile[MAX_FILE_LEN + 1];
 /*----------------------------------------------------------------------------*/
 static char host[MAX_IP_STR_LEN + 1];
 static char url[MAX_URL_LEN + 1];
-static in_addr_t daddr;
-static in_port_t dport;
-static in_addr_t saddr;
+static int use_ipv6;
+static struct sockaddr_storage saddr;
+static struct sockaddr_storage daddr;
+static in_port_t* dport;
 /*----------------------------------------------------------------------------*/
 static int total_flows;
 static int flows[MAX_CPUS];
@@ -170,11 +171,11 @@ CreateConnection(thread_context_t ctx)
 {
 	mctx_t mctx = ctx->mctx;
 	struct mtcp_epoll_event ev;
-	struct sockaddr_in addr;
+	struct sockaddr_storage addr;
 	int sockid;
 	int ret;
 
-	sockid = mtcp_socket(mctx, AF_INET, SOCK_STREAM, 0);
+	sockid = mtcp_socket(mctx, use_ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
 	if (sockid < 0) {
 		TRACE_INFO("Failed to create socket!\n");
 		return -1;
@@ -186,12 +187,8 @@ CreateConnection(thread_context_t ctx)
 		exit(-1);
 	}
 
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = daddr;
-	addr.sin_port = dport;
-	
-	ret = mtcp_connect(mctx, sockid, 
-			(struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	socklen_t sockaddr_size = use_ipv6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	ret = mtcp_connect(mctx, sockid, (struct sockaddr*)&daddr, sockaddr_size);
 	if (ret < 0) {
 		if (errno != EINPROGRESS) {
 			perror("mtcp_connect");
@@ -525,7 +522,6 @@ RunWgetMain(void *arg)
 	thread_context_t ctx;
 	mctx_t mctx;
 	int core = *(int *)arg;
-	struct in_addr daddr_in;
 	int n, maxevents;
 	int ep;
 	struct mtcp_epoll_event *events;
@@ -547,7 +543,7 @@ RunWgetMain(void *arg)
 	g_stat[core] = &ctx->stat;
 	srand(time(NULL));
 
-	mtcp_init_rss(mctx, saddr, IP_RANGE, daddr, dport);
+	mtcp_init_rss(mctx, (struct sockaddr*)&saddr, IP_RANGE, (struct sockaddr*)&daddr);
 
 	n = flows[core];
 	if (n == 0) {
@@ -557,9 +553,7 @@ RunWgetMain(void *arg)
 	}
 	ctx->target = n;
 
-	daddr_in.s_addr = daddr;
-	fprintf(stderr, "Thread %d handles %d flows. connecting to %s:%u\n", 
-			core, n, inet_ntoa(daddr_in), ntohs(dport));
+	fprintf(stderr, "Thread %d handles %d flows.\n", core, n);
 
 	/* Initialization */
 	maxevents = max_fds * 3;
@@ -693,6 +687,8 @@ main(int argc, char **argv)
 	int total_concurrency = 0;
 	int ret;
 	int i;
+	in_addr_t addr4;
+	struct in6_addr addr6;
 
 	if (argc < 3) {
 		TRACE_CONFIG("Too few arguments!\n");
@@ -714,9 +710,36 @@ main(int argc, char **argv)
 		strncpy(url, "/", 1);
 	}
 
-	daddr = inet_addr(host);
-	dport = htons(80);
-	saddr = INADDR_ANY;
+	/* Detect whether to use IPv6 */
+	use_ipv6 = 0;
+	ret = inet_pton(AF_INET, host, &addr4);
+	if (ret == 0) {
+		ret = inet_pton(AF_INET6, host, &addr6);
+		if (ret == 0) {
+			fprintf(stderr, "Invalid address %s\n", host);
+			return -1;
+		}
+		use_ipv6 = 1;
+	}
+	if (!use_ipv6) {
+		struct sockaddr_in* daddr4 = (struct sockaddr_in*) &daddr;
+		struct sockaddr_in* saddr4 = (struct sockaddr_in*) &saddr;
+		daddr4->sin_family = AF_INET;
+		daddr4->sin_addr.s_addr = addr4;
+		dport = &daddr4->sin_port;
+		saddr4->sin_family = AF_INET;
+		saddr4->sin_addr.s_addr = INADDR_ANY;
+	} else {
+		struct sockaddr_in6* daddr6 = (struct sockaddr_in6*) &daddr;
+		struct sockaddr_in6* saddr6 = (struct sockaddr_in6*) &saddr;
+		daddr6->sin6_family = AF_INET6;
+		daddr6->sin6_addr = addr6;
+		dport = &daddr6->sin6_port;
+		saddr6->sin6_family = AF_INET6;
+		saddr6->sin6_addr = in6addr_any;
+	}
+
+	*dport = htons(80);
 
 	total_flows = atoi(argv[2]);
 	if (total_flows <= 0) {
@@ -746,6 +769,8 @@ main(int argc, char **argv)
 			}
 			fio = TRUE;
 			strncpy(outfile, argv[i + 1], MAX_FILE_LEN);
+		} else if (strcmp(argv[i], "-p") == 0) {
+			*dport = htons(atoi(argv[i + 1]));
 		}
 	}
 

@@ -160,10 +160,26 @@ typedef struct tcp_stream
 	uint32_t id:24, 
 			 stream_type:8;
 
-	uint32_t saddr;			/* in network order */
-	uint32_t daddr;			/* in network order */
-	uint16_t sport;			/* in network order */
-	uint16_t dport;			/* in network order */
+	union {
+		struct sockaddr_in saddr4;
+		struct sockaddr_in6 saddr6;
+		struct sockaddr saddr;
+		struct {
+			uint16_t : 16;
+			uint16_t sport;
+		};
+	};
+	union {
+		struct sockaddr_in daddr4;
+		struct sockaddr_in6 daddr6;
+		struct sockaddr daddr;
+		struct {
+			uint16_t : 16;
+			uint16_t dport; /* sin_port and sin6_port are at the same place
+							 * in struct sockaddr_in and sockaddr_in6 */
+
+		};
+	};
 	
 	uint8_t state;			/* tcp state */
 	uint8_t close_reason;	/* close reason */
@@ -220,7 +236,7 @@ RaiseErrorEvent(mtcp_manager_t mtcp, tcp_stream *stream);
 
 tcp_stream *
 CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
-		uint32_t saddr, uint16_t sport, uint32_t daddr, uint16_t dport);
+		const struct sockaddr* saddr, const struct sockaddr* daddr);
 
 void
 DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream);

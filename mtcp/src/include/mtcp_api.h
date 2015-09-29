@@ -95,8 +95,8 @@ int
 mtcp_accept(mctx_t mctx, int sockid, struct sockaddr *addr, socklen_t *addrlen);
 
 int 
-mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr, 
-		in_addr_t daddr, in_addr_t dport);
+mtcp_init_rss(mctx_t mctx, const struct sockaddr* saddr_base, int num_addr,
+		const struct sockaddr* daddr);
 
 int 
 mtcp_connect(mctx_t mctx, int sockid, 

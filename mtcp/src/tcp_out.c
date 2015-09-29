@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include "tcp_out.h"
 #include "mtcp.h"
+#include "ip6_out.h"
 #include "ip_out.h"
 #include "tcp_in.h"
 #include "tcp_stream.h"
@@ -8,7 +9,7 @@
 #include "timer.h"
 #include "debug.h"
 
-#define TCP_CALCULATE_CHECKSUM      TRUE
+#define TCP_CALCULATE_CHECKSUM	  TRUE
 #define ACK_PIGGYBACK				TRUE
 #define TRY_SEND_BEFORE_QUEUE		FALSE
 
@@ -134,12 +135,12 @@ GenerateTCPOptions(tcp_stream *cur_stream, uint32_t cur_ts,
 /*----------------------------------------------------------------------------*/
 int
 SendTCPPacketStandalone(struct mtcp_manager *mtcp, 
-		uint32_t saddr, uint16_t sport, uint32_t daddr, uint16_t dport, 
+		const struct sockaddr* saddr, const struct sockaddr* daddr,
 		uint32_t seq, uint32_t ack_seq, uint16_t window, uint8_t flags, 
 		uint8_t *payload, uint16_t payloadlen, 
 		uint32_t cur_ts, uint32_t echo_ts)
 {
-	struct tcphdr *tcph;
+	struct tcphdr *tcph = NULL;
 	uint8_t *tcpopt;
 	uint32_t *ts;
 	uint16_t optlen;
@@ -151,15 +152,24 @@ SendTCPPacketStandalone(struct mtcp_manager *mtcp,
 		return ERROR;
 	}
 
-	tcph = (struct tcphdr *)IPOutputStandalone(mtcp, IPPROTO_TCP, 0, 
-			saddr, daddr, TCP_HEADER_LEN + optlen + payloadlen);
+	if (daddr->sa_family == AF_INET6) {
+		tcph = (struct tcphdr *)IPv6OutputStandalone(mtcp, IPPROTO_TCP,
+			&((struct sockaddr_in6*)saddr)->sin6_addr, &((struct sockaddr_in6*)daddr)->sin6_addr,
+			TCP_HEADER_LEN + optlen + payloadlen);
+	} else if (daddr->sa_family == AF_INET) {
+		tcph = (struct tcphdr *)IPOutputStandalone(mtcp, IPPROTO_TCP, 0,
+			((struct sockaddr_in*)saddr)->sin_addr.s_addr, ((struct sockaddr_in*)daddr)->sin_addr.s_addr,
+			TCP_HEADER_LEN + optlen + payloadlen);
+	} else {
+		assert(0);
+	}
 	if (tcph == NULL) {
 		return ERROR;
 	}
 	memset(tcph, 0, TCP_HEADER_LEN + optlen);
 
-	tcph->source = sport;
-	tcph->dest = dport;
+	tcph->source = ((struct sockaddr_in*)saddr)->sin_port;
+	tcph->dest = ((struct sockaddr_in*)daddr)->sin_port;
 
 	if (flags & TCP_FLAG_SYN)
 		tcph->syn = TRUE;
@@ -210,7 +220,7 @@ int
 SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream, 
 		uint32_t cur_ts, uint8_t flags, uint8_t *payload, uint16_t payloadlen)
 {
-	struct tcphdr *tcph;
+	struct tcphdr *tcph = NULL;
 	uint16_t optlen;
 	uint8_t wscale = 0;
 	uint32_t window32 = 0;
@@ -221,8 +231,15 @@ SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream,
 		return ERROR;
 	}
 
-	tcph = (struct tcphdr *)IPOutput(mtcp, cur_stream, 
+	if (cur_stream->daddr.sa_family == AF_INET6) {
+		tcph = (struct tcphdr *)IPv6Output(mtcp, cur_stream,
 			TCP_HEADER_LEN + optlen + payloadlen);
+	} else if (cur_stream->daddr.sa_family == AF_INET) {
+		tcph = (struct tcphdr *)IPOutput(mtcp, cur_stream,
+			TCP_HEADER_LEN + optlen + payloadlen);
+	} else {
+		assert(0);
+	}
 	if (tcph == NULL) {
 		return -2;
 	}
@@ -305,7 +322,7 @@ SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream,
 #if TCP_CALCULATE_CHECKSUM
 	tcph->check = TCPCalcChecksum((uint16_t *)tcph, 
 			TCP_HEADER_LEN + optlen + payloadlen, 
-			cur_stream->saddr, cur_stream->daddr);
+			&cur_stream->saddr, &cur_stream->daddr);
 #endif
 
 	cur_stream->snd_nxt += payloadlen;

@@ -165,7 +165,7 @@ SetInterfaceInfo(char* dev_name_list)
 		/* get the mem channels per socket */
 		if (CONFIG.num_mem_ch == 0) {
 			TRACE_ERROR("DPDK module requires # of memory channels "
-				    "per socket parameter!\n");
+					"per socket parameter!\n");
 			exit(EXIT_FAILURE);
 		}
 		sprintf(mem_channels, "%d", CONFIG.num_mem_ch);
@@ -220,10 +220,10 @@ SetInterfaceInfo(char* dev_name_list)
 		iter_if = ifap;
 		do {
 			if (iter_if->ifa_addr->sa_family == AF_INET &&
-			    !set_all_inf && 
-			    (seek=strstr(dev_name_list, iter_if->ifa_name)) != NULL &&
-			    /* check if the interface was not aliased */
-			    *(seek + strlen(iter_if->ifa_name)) != ':') {
+				!set_all_inf &&
+				(seek=strstr(dev_name_list, iter_if->ifa_name)) != NULL &&
+				/* check if the interface was not aliased */
+				*(seek + strlen(iter_if->ifa_name)) != ':') {
 				struct ifreq ifr;
 				
 				/* Setting informations */
@@ -258,10 +258,10 @@ SetInterfaceInfo(char* dev_name_list)
 				
 				for (j = 0; j < num_devices; j++) {
 					if (!memcmp(&CONFIG.eths[eidx].haddr[0], &ports_eth_addr[j],
-						    ETH_ALEN))
+							ETH_ALEN))
 						CONFIG.eths[eidx].ifindex = j;
 				}
-					    
+
 				/* add to attached devices */
 				for (j = 0; j < num_devices_attached; j++) {
 					if (devices_attached[j] == CONFIG.eths[eidx].ifindex) {
@@ -274,6 +274,17 @@ SetInterfaceInfo(char* dev_name_list)
 					num_devices_attached);
 				fprintf(stderr, "Interface name: %s\n", 
 					iter_if->ifa_name);
+
+			} else if (iter_if->ifa_addr->sa_family == AF_INET6) {
+				/* Set IPv6 address for device corresponding to iter_if */
+				for (j = 0; j < MAX_DEVICES; j++) {
+					if (!strcmp(iter_if->ifa_name, CONFIG.eths[j].dev_name)) {
+						struct sockaddr_in6* sin6 = (struct sockaddr_in6*) iter_if->ifa_addr;
+						CONFIG.eths[j].ip6_addr = sin6->sin6_addr;
+						sin6 = (struct sockaddr_in6*) iter_if->ifa_netmask;
+						CONFIG.eths[j].ip6_netmask = sin6->sin6_addr;
+					}
+				}
 			}
 			iter_if = iter_if->ifa_next;
 		} while (iter_if != NULL);

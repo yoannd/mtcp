@@ -13,11 +13,10 @@ enum ack_opt
 
 int
 SendTCPPacketStandalone(struct mtcp_manager *mtcp, 
-		uint32_t saddr, uint16_t sport, uint32_t daddr, uint16_t dport, 
-		uint32_t seq, uint32_t ack_seq, uint16_t window, uint8_t flags, 
-		uint8_t *payload, uint16_t payloadlen, 
+		const struct sockaddr* daddr, const struct sockaddr* saddr,
+		uint32_t seq, uint32_t ack_seq, uint16_t window, uint8_t flags,
+		uint8_t *payload, uint16_t payloadlen,
 		uint32_t cur_ts, uint32_t echo_ts);
-
 int
 SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream,
 		uint32_t cur_ts, uint8_t flags, uint8_t *payload, uint16_t payloadlen);

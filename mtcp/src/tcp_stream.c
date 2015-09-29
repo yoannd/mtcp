@@ -46,46 +46,63 @@ TCPStateToString(const tcp_stream *stream)
 unsigned int
 HashFlow(const tcp_stream *flow)
 {
-#if 0
-	unsigned long hash = 5381;
-	int c;
-	int index;
-
-	char *str = (char *)&flow->saddr;
-	index = 0;
-
-	while ((c = *str++) && index++ < 12) {
-		if (index == 8) {
-			str = (char *)&flow->sport;
-		}
-		hash = ((hash << 5) + hash) + c;
-	}
-
-	return hash & (NUM_BINS - 1);
-#else
-	unsigned int hash, i;
-	char *key = (char *)&flow->saddr;
-
-	for (hash = i = 0; i < 12; ++i) {
+	unsigned int hash, i, len = 0;
+	char *key = (char *)&flow->sport;
+	hash = 0;
+	for (i = 0; i < 2; ++i) {
 		hash += key[i];
 		hash += (hash << 10);
 		hash ^= (hash >> 6);
 	}
+	key = (char*)&flow->dport;
+	for (i = 0; i < 2; ++i) {
+		hash += key[i];
+		hash += (hash << 10);
+		hash ^= (hash >> 6);
+	}
+	if (flow->saddr.sa_family == AF_INET6) {
+		key = (char*)&flow->saddr6.sin6_addr;
+		len = 16;
+	} else if (flow->saddr.sa_family == AF_INET) {
+		key = (char*)&flow->saddr4.sin_addr;
+		len = 4;
+	} else {
+		assert(0);
+	}
+	for (i = 0; i < len; ++i) {
+		hash += key[i];
+		hash += (hash << 10);
+		hash ^= (hash >> 6);
+	}
+	if (flow->saddr.sa_family == AF_INET6) {
+		key = (char*)&flow->daddr6.sin6_addr;
+	} else if (flow->saddr.sa_family == AF_INET) {
+		key = (char*)&flow->daddr4.sin_addr;
+	} else {
+		assert(0);
+	}
+	for (i = 0; i < len; ++i) {
+		hash += key[i];
+		hash += (hash << 10);
+		hash ^= (hash >> 6);
+	}
+
 	hash += (hash << 3);
 	hash ^= (hash >> 11);
 	hash += (hash << 15);
 
 	return hash & (NUM_BINS - 1);
-#endif
 }
 /*---------------------------------------------------------------------------*/
 int
 EqualFlow(const tcp_stream *flow1, const tcp_stream *flow2)
 {
-	return (flow1->saddr == flow2->saddr && 
-			flow1->sport == flow2->sport &&
-			flow1->daddr == flow2->daddr &&
-			flow1->dport == flow2->dport);
+	return (flow1->sport == flow2->sport && flow1->dport == flow2->dport &&
+			(	 (flow1->saddr.sa_family == AF_INET && flow2->saddr.sa_family == AF_INET &&
+				   flow1->saddr4.sin_addr.s_addr == flow2->saddr4.sin_addr.s_addr)
+			  ||  (flow1->saddr.sa_family == AF_INET6 && flow2->saddr.sa_family == AF_INET6 &&
+				   !memcmp(&flow1->saddr6.sin6_addr, &flow2->saddr6.sin6_addr, sizeof(struct in6_addr)))
+			));
 }
 /*---------------------------------------------------------------------------*/
 inline void 
@@ -189,14 +206,11 @@ RaiseErrorEvent(mtcp_manager_t mtcp, tcp_stream *stream)
 /*---------------------------------------------------------------------------*/
 tcp_stream *
 CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
-		uint32_t saddr, uint16_t sport, uint32_t daddr, uint16_t dport)
+		const struct sockaddr* saddr, const struct sockaddr* daddr)
 {
 	tcp_stream *stream = NULL;
 	int ret;
 
-	uint8_t *sa;
-	uint8_t *da;
-	
 	pthread_mutex_lock(&mtcp->ctx->flow_pool_lock);
 
 	stream = (tcp_stream *)MPAllocateChunk(mtcp->flow_pool);
@@ -226,10 +240,10 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 	memset(stream->sndvar, 0, sizeof(struct tcp_send_vars));
 
 	stream->id = mtcp->g_id++;
-	stream->saddr = saddr;
-	stream->sport = sport;
-	stream->daddr = daddr;
-	stream->dport = dport;
+	socklen_t sockaddr_size = daddr->sa_family == AF_INET6 ?
+							sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	memcpy(&stream->saddr, saddr, sockaddr_size);
+	memcpy(&stream->daddr, daddr, sockaddr_size);
 
 	ret = HTInsert(mtcp->tcp_flow_table, stream);
 	if (ret < 0) {
@@ -258,7 +272,7 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 	stream->sndvar->mss = TCP_DEFAULT_MSS;
 	stream->sndvar->wscale_mine = TCP_DEFAULT_WSCALE;
 	stream->sndvar->wscale_peer = 0;
-	stream->sndvar->nif_out = GetOutputInterface(stream->daddr);
+	stream->sndvar->nif_out = GetOutputInterface(&stream->daddr);
 
 	stream->sndvar->iss = rand() % TCP_MAX_SEQ;
 	//stream->sndvar->iss = 0;
@@ -313,25 +327,16 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 		return NULL;
 	}
 
-	sa = (uint8_t *)&stream->saddr;
-	da = (uint8_t *)&stream->daddr;
-	TRACE_STREAM("CREATED NEW TCP STREAM %d: "
-			"%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u)\n", stream->id, 
-			sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), 
-			da[0], da[1], da[2], da[3], ntohs(stream->dport), 
-			stream->sndvar->iss);
+	TRACE_STREAM("CREATED NEW TCP STREAM %d: ", stream->id);
 
-	UNUSED(da);
-	UNUSED(sa);
 	return stream;
 }
 /*---------------------------------------------------------------------------*/
 void
 DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 {
-	struct sockaddr_in addr;
+	struct sockaddr_storage addr;
 	int bound_addr = FALSE;
-	uint8_t *sa, *da;
 	int ret;
 
 #ifdef DUMP_STREAM
@@ -344,13 +349,7 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 	}
 #endif
 
-	sa = (uint8_t *)&stream->saddr;
-	da = (uint8_t *)&stream->daddr;
-	TRACE_STREAM("DESTROY TCP STREAM %d: "
-			"%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (%s)\n", stream->id, 
-			sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), 
-			da[0], da[1], da[2], da[3], ntohs(stream->dport), 
-			close_reason_str[stream->close_reason]);
+	TRACE_STREAM("DESTROY TCP STREAM %d: %s", stream->id, close_reason_str[stream->close_reason]);
 
 	if (stream->sndvar->sndbuf) {
 		TRACE_FSTAT("Stream %d: send buffer "
@@ -414,8 +413,10 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	if (stream->is_bound_addr) {
 		bound_addr = TRUE;
-		addr.sin_addr.s_addr = stream->saddr;
-		addr.sin_port = stream->sport;
+		socklen_t sockaddr_size = stream->saddr.sa_family == AF_INET6 ?
+				sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+
+		memcpy(&addr, &stream->saddr, sockaddr_size);
 	}
 
 	RemoveFromControlList(mtcp, stream);
@@ -485,9 +486,9 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	if (bound_addr) {
 		if (mtcp->ap) {
-			ret = FreeAddress(mtcp->ap, &addr);
+			ret = FreeAddress(mtcp->ap, (struct sockaddr*)&addr);
 		} else {
-			ret = FreeAddress(ap, &addr);
+			ret = FreeAddress(ap, (struct sockaddr*)&addr);
 		}
 		if (ret < 0) {
 			TRACE_ERROR("(NEVER HAPPEN) Failed to free address.\n");
@@ -501,8 +502,6 @@ DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 #endif /* NETSTAT_PERTHREAD */
 #endif /* NETSTAT */
 
-	UNUSED(da);
-	UNUSED(sa);
 }
 /*---------------------------------------------------------------------------*/
 void 
@@ -512,16 +511,34 @@ DumpStream(mtcp_manager_t mtcp, tcp_stream *stream)
 	struct tcp_send_vars *sndvar = stream->sndvar;
 	struct tcp_recv_vars *rcvvar = stream->rcvvar;
 
-	sa = (uint8_t *)&stream->saddr;
-	da = (uint8_t *)&stream->daddr;
-	thread_printf(mtcp, mtcp->log_fp, "========== Stream %u: "
-			"%u.%u.%u.%u(%u) -> %u.%u.%u.%u(%u) ==========\n", stream->id, 
-			sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), 
-			da[0], da[1], da[2], da[3], ntohs(stream->dport));
-	thread_printf(mtcp, mtcp->log_fp, 
-			"Stream id: %u, type: %u, state: %s, close_reason: %s\n",  
-			stream->id, stream->stream_type, 
+	if (stream->saddr.sa_family == AF_INET) {
+		sa = (uint8_t *)&stream->saddr4.sin_addr;
+		da = (uint8_t *)&stream->daddr4.sin_addr;
+		thread_printf(mtcp, mtcp->log_fp, "========== Stream %u: "
+				"%u.%u.%u.%u(%u) -> %u.%u.%u.%u(%u) ==========\n", stream->id,
+				sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], ntohs(stream->dport));
+
+
+	} else if (stream->saddr.sa_family == AF_INET6) {
+		sa = (uint8_t *)&stream->saddr6.sin6_addr;
+		da = (uint8_t *)&stream->daddr6.sin6_addr;
+		thread_printf(mtcp, mtcp->log_fp, "========== Stream %u: "
+				"%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u(%u) -> %u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u:%u%u(%u) ==========\n", stream->id,
+				sa[0], sa[1], sa[2], sa[3], sa[4], sa[5], sa[6], sa[7],
+				sa[8], sa[9], sa[10], sa[11], sa[12], sa[13], sa[14], sa[15],
+				ntohs(stream->sport),
+				da[0], da[1], da[2], da[3], da[4], da[5], da[6], da[7],
+				da[8], sa[9], da[10], da[11], sa[12], da[13], da[14], da[15],
+				ntohs(stream->dport));
+	} else {
+		assert(0);
+	}
+	thread_printf(mtcp, mtcp->log_fp,
+			"Stream id: %u, type: %u, state: %s, close_reason: %s\n",
+			stream->id, stream->stream_type,
 			TCPStateToString(stream), close_reason_str[stream->close_reason]);
+
 	if (stream->socket) {
 		socket_map_t socket = stream->socket;
 		thread_printf(mtcp, mtcp->log_fp, "Socket id: %d, type: %d, opts: %u\n"

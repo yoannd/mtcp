@@ -2,19 +2,19 @@
 #include "ip_in.h"
 #include "eth_out.h"
 #include "arp.h"
+#include "ip6_out.h"
 #include "debug.h"
 
 /*----------------------------------------------------------------------------*/
 inline int
-GetOutputInterface(uint32_t daddr)
+GetOutputInterfaceIPv4(uint32_t ip)
 {
 	int nif = -1;
 	int i;
 	int prefix = 0;
-
 	/* Longest prefix matching */
 	for (i = 0; i < CONFIG.routes; i++) {
-		if ((daddr & CONFIG.rtable[i].mask) == CONFIG.rtable[i].masked) {
+		if ((ip & CONFIG.rtable[i].mask) == CONFIG.rtable[i].masked) {
 			if (CONFIG.rtable[i].prefix > prefix) {
 				nif = CONFIG.rtable[i].nif;
 				prefix = CONFIG.rtable[i].prefix;
@@ -23,13 +23,26 @@ GetOutputInterface(uint32_t daddr)
 	}
 
 	if (nif < 0) {
-		uint8_t *da = (uint8_t *)&daddr;
-		TRACE_ERROR("[WARNING] No route to %u.%u.%u.%u\n", 
+		uint8_t *da = (uint8_t *)&ip;
+		TRACE_ERROR("[WARNING] No route to %u.%u.%u.%u\n",
 				da[0], da[1], da[2], da[3]);
 		assert(0);
 	}
-	
 	return nif;
+}
+/*----------------------------------------------------------------------------*/
+inline int
+GetOutputInterface(const struct sockaddr* daddr)
+{
+	if (daddr->sa_family == AF_INET) {
+		return GetOutputInterfaceIPv4(((struct sockaddr_in*)daddr)->sin_addr.s_addr);
+
+	} else if (daddr->sa_family == AF_INET6) {
+		return GetOutputInterfaceIPv6(&((struct sockaddr_in6*)daddr)->sin6_addr);
+	} else {
+		assert(0);
+		return -1;
+	}
 }
 /*----------------------------------------------------------------------------*/
 uint8_t *
@@ -40,7 +53,7 @@ IPOutputStandalone(struct mtcp_manager *mtcp, uint8_t protocol,
 	int nif;
 	unsigned char * haddr;
 
-	nif = GetOutputInterface(daddr);
+	nif = GetOutputInterfaceIPv4(saddr);
 	if (nif < 0)
 		return NULL;
 
@@ -88,11 +101,11 @@ IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen)
 	if (stream->sndvar->nif_out >= 0) {
 		nif = stream->sndvar->nif_out;
 	} else {
-		nif = GetOutputInterface(stream->daddr);
+		nif = GetOutputInterfaceIPv4(stream->daddr4.sin_addr.s_addr);
 		stream->sndvar->nif_out = nif;
 	}
 
-	haddr = GetDestinationHWaddr(stream->daddr);
+	haddr = GetDestinationHWaddr(stream->daddr4.sin_addr.s_addr);
 	if (!haddr) {
 #if 0
 		uint8_t *da = (uint8_t *)&stream->daddr;
@@ -102,7 +115,7 @@ IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen)
 #endif
 		/* if not found in the arp table, send arp request and return NULL */
 		/* tcp will retry sending the packet later */
-		RequestARP(mtcp, stream->daddr, stream->sndvar->nif_out, mtcp->cur_ts);
+		RequestARP(mtcp, stream->daddr4.sin_addr.s_addr, stream->sndvar->nif_out, mtcp->cur_ts);
 		return NULL;
 	}
 	
@@ -120,8 +133,8 @@ IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen)
 	iph->frag_off = htons(0x4000);	// no fragmentation
 	iph->ttl = 64;
 	iph->protocol = IPPROTO_TCP;
-	iph->saddr = stream->saddr;
-	iph->daddr = stream->daddr;
+	iph->saddr = stream->saddr4.sin_addr.s_addr;
+	iph->daddr = stream->daddr4.sin_addr.s_addr;
 	iph->check = 0;
 	iph->check = ip_fast_csum(iph, iph->ihl);
 

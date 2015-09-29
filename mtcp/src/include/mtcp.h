@@ -45,7 +45,7 @@
 #define ETH_NUM 4
 
 #define TCP_OPT_TIMESTAMP_ENABLED   TRUE	/* enabled for rtt measure */
-#define TCP_OPT_SACK_ENABLED        FALSE	/* not implemented */
+#define TCP_OPT_SACK_ENABLED		FALSE	/* not implemented */
 
 #define LOCK_STREAM_QUEUE	FALSE
 #define USE_SPIN_LOCK		TRUE
@@ -93,6 +93,9 @@ struct eth_table
 	uint32_t netmask;
 //	unsigned char dst_haddr[ETH_ALEN];
 	uint32_t ip_addr;
+
+	struct in6_addr ip6_addr;
+	struct in6_addr ip6_netmask;
 };
 /*----------------------------------------------------------------------------*/
 struct route_table
@@ -100,6 +103,13 @@ struct route_table
 	uint32_t daddr;
 	uint32_t mask;
 	uint32_t masked;
+	int prefix;
+	int nif;
+};
+/*----------------------------------------------------------------------------*/
+struct route_table6
+{
+	struct in6_addr daddr;
 	int prefix;
 	int nif;
 };
@@ -119,6 +129,19 @@ struct arp_table
 	int entries;
 };
 /*----------------------------------------------------------------------------*/
+struct nd_entry
+{
+	struct in6_addr ip;
+	int16_t prefix;
+	unsigned char haddr[ETH_ALEN];
+};
+/*----------------------------------------------------------------------------*/
+struct nd_table
+{
+	struct nd_entry *entry;
+	int entries;
+};
+/*----------------------------------------------------------------------------*/
 struct mtcp_config
 {
 	/* socket mode */
@@ -132,8 +155,14 @@ struct mtcp_config
 	struct route_table *rtable;		// routing table
 	int routes;						// # of entries
 
+	/* IPv6 route config */
+	struct route_table6 *rtable6;		// routing table
+	int routes6;						// # of entries
+
 	/* arp config */
 	struct arp_table arp;
+	/* neighbor discovery config */
+	struct nd_table nd;
 
 	int num_cores;
 	int num_mem_ch;

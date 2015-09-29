@@ -11,7 +11,11 @@
 /*----------------------------------------------------------------------------*/
 struct addr_entry
 {
-	struct sockaddr_in addr;
+	union {
+		struct sockaddr addr;
+		struct sockaddr_in addr4;
+		struct sockaddr_in6 addr6;
+	};
 	TAILQ_ENTRY(addr_entry) addr_link;
 };
 /*----------------------------------------------------------------------------*/
@@ -25,7 +29,7 @@ struct addr_pool
 	struct addr_entry *pool;		/* address pool */
 	struct addr_map *mapper;		/* address map  */
 
-	uint32_t addr_base;				/* in host order */
+	struct sockaddr_storage addr_base;
 	int num_addr;					/* number of addresses in use */
 
 	int num_entry;
@@ -38,13 +42,12 @@ struct addr_pool
 };
 /*----------------------------------------------------------------------------*/
 addr_pool_t 
-CreateAddressPool(in_addr_t addr_base, int num_addr)
+CreateAddressPool(const struct sockaddr* addr_base, int num_addr)
 {
 	struct addr_pool *ap;
 	int num_entry;
 	int i, j, cnt;
-	in_addr_t addr;
-	uint32_t addr_h;
+	struct sockaddr_storage addr;
 
 	ap = (addr_pool_t)calloc(1, sizeof(struct addr_pool));
 	if (!ap)
@@ -77,23 +80,32 @@ CreateAddressPool(in_addr_t addr_base, int num_addr)
 
 	pthread_mutex_lock(&ap->lock);
 
-	ap->addr_base = ntohl(addr_base);
+	socklen_t sockaddr_size = addr_base->sa_family == AF_INET6 ?
+							sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	memcpy(&ap->addr_base, addr_base, sockaddr_size);
+	memcpy(&addr, addr_base, sockaddr_size);
+	/* sin_port and sin6_port are at the same place in struct sockaddr_in{4,6} */
+	in_port_t* port = &((struct sockaddr_in*)&addr)->sin_port;
+	in_addr_t* addr_addr = addr.ss_family == AF_INET6 ?
+			&((struct sockaddr_in6*)&addr)->sin6_addr.s6_addr32[3] :
+			&((struct sockaddr_in*)&addr)->sin_addr.s_addr;
+
 	ap->num_addr = num_addr;
 
 	cnt = 0;
 	for (i = 0; i < num_addr; i++) {
-		addr_h = ap->addr_base + i;
-		addr = htonl(addr_h);
 		for (j = MIN_PORT; j < MAX_PORT; j++) {
-			ap->pool[cnt].addr.sin_addr.s_addr = addr;
-			ap->pool[cnt].addr.sin_port = htons(j);
+			*port = htons(j);
+
+			memcpy(&ap->pool[cnt].addr, &addr, sockaddr_size);
+
 			ap->mapper[i].addrmap[j] = &ap->pool[cnt];
-			
 			TAILQ_INSERT_TAIL(&ap->free_list, &ap->pool[cnt], addr_link);
 
 			if ((++cnt) >= num_entry)
 				break;
 		}
+		*addr_addr = htonl(ntohl(*addr_addr) + 1);
 	}
 	ap->num_entry = cnt;
 	ap->num_free = cnt;
@@ -106,15 +118,13 @@ CreateAddressPool(in_addr_t addr_base, int num_addr)
 /*----------------------------------------------------------------------------*/
 addr_pool_t 
 CreateAddressPoolPerCore(int core, int num_queues, 
-		in_addr_t saddr_base, int num_addr, in_addr_t daddr, in_port_t dport)
+		const struct sockaddr* saddr_base, int num_addr, const struct sockaddr* daddr)
 {
 	struct addr_pool *ap;
 	int num_entry;
 	int i, j, cnt;
-	in_addr_t saddr;
-	uint32_t saddr_h, daddr_h;
-	uint16_t sport_h, dport_h;
 	int rss_core;
+	struct sockaddr_storage saddr;
 	uint8_t endian_check = (current_iomodule_func == &dpdk_module_func) ?
 		0 : 1;
 
@@ -149,31 +159,36 @@ CreateAddressPoolPerCore(int core, int num_queues,
 
 	pthread_mutex_lock(&ap->lock);
 
-	ap->addr_base = ntohl(saddr_base);
+	socklen_t sockaddr_size = saddr_base->sa_family == AF_INET6 ?
+							sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+	memcpy(&ap->addr_base, saddr_base, sockaddr_size);
+	memcpy(&saddr, saddr_base, sockaddr_size);
+	/* sin_port and sin6_port are at the same place in struct sockaddr_in[6] */
+	in_port_t* sport = &((struct sockaddr_in*)&saddr)->sin_port;
+	in_addr_t* saddr_addr = saddr.ss_family == AF_INET6 ?
+			&((struct sockaddr_in6*)&saddr)->sin6_addr.s6_addr32[3] :
+			&((struct sockaddr_in*)&saddr)->sin_addr.s_addr;
 	ap->num_addr = num_addr;
-	daddr_h = ntohl(daddr);
-	dport_h = ntohs(dport);
 
 	/* search address space to get RSS-friendly addresses */
 	cnt = 0;
 	for (i = 0; i < num_addr; i++) {
-		saddr_h = ap->addr_base + i;
-		saddr = htonl(saddr_h);
 		for (j = MIN_PORT; j < MAX_PORT; j++) {
 			if (cnt >= num_entry)
 				break;
 
-			sport_h = j;
-			rss_core = GetRSSCPUCore(daddr_h, saddr_h, dport_h, sport_h, num_queues, endian_check);
+			*sport = htons(j);
+			rss_core = GetRSSCPUCore((struct sockaddr*)daddr, (struct sockaddr*)&saddr,
+					num_queues, endian_check);
 			if (rss_core != core)
 				continue;
 
-			ap->pool[cnt].addr.sin_addr.s_addr = saddr;
-			ap->pool[cnt].addr.sin_port = htons(sport_h);
+			memcpy(&ap->pool[cnt].addr, &saddr, sockaddr_size);
 			ap->mapper[i].addrmap[j] = &ap->pool[cnt];
 			TAILQ_INSERT_TAIL(&ap->free_list, &ap->pool[cnt], addr_link);
 			cnt++;
 		}
+		*saddr_addr = htonl(ntohl(*saddr_addr) + 1);
 	}
 
 	ap->num_entry = cnt;
@@ -214,7 +229,7 @@ DestroyAddressPool(addr_pool_t ap)
 /*----------------------------------------------------------------------------*/
 int 
 FetchAddress(addr_pool_t ap, int core, int num_queues, 
-		const struct sockaddr_in *daddr, struct sockaddr_in *saddr)
+		const struct sockaddr *daddr, struct sockaddr *saddr)
 {
 	struct addr_entry *walk, *next;
 	int rss_core;
@@ -231,9 +246,7 @@ FetchAddress(addr_pool_t ap, int core, int num_queues,
 	while (walk) {
 		next = TAILQ_NEXT(walk, addr_link);
 
-		rss_core = GetRSSCPUCore(ntohl(walk->addr.sin_addr.s_addr), 
-					 ntohl(daddr->sin_addr.s_addr), ntohs(walk->addr.sin_port), 
-					 ntohs(daddr->sin_port), num_queues, endian_check);
+		rss_core = GetRSSCPUCore(&walk->addr, daddr, num_queues, endian_check);
 
 		if (core == rss_core)
 			break;
@@ -242,7 +255,9 @@ FetchAddress(addr_pool_t ap, int core, int num_queues,
 	}
 
 	if (walk) {
-		*saddr = walk->addr;
+		socklen_t sockaddr_size = walk->addr.sa_family == AF_INET6 ?
+								sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+		memcpy(saddr, &walk->addr, sockaddr_size);
 		TAILQ_REMOVE(&ap->free_list, walk, addr_link);
 		TAILQ_INSERT_TAIL(&ap->used_list, walk, addr_link);
 		ap->num_free--;
@@ -256,7 +271,7 @@ FetchAddress(addr_pool_t ap, int core, int num_queues,
 }
 /*----------------------------------------------------------------------------*/
 int 
-FreeAddress(addr_pool_t ap, const struct sockaddr_in *addr)
+FreeAddress(addr_pool_t ap, const struct sockaddr* addr)
 {
 	struct addr_entry *walk, *next;
 	int ret = -1;
@@ -267,12 +282,17 @@ FreeAddress(addr_pool_t ap, const struct sockaddr_in *addr)
 	pthread_mutex_lock(&ap->lock);
 
 	if (ap->mapper) {
-		uint32_t addr_h = ntohl(addr->sin_addr.s_addr);
-		uint16_t port_h = ntohs(addr->sin_port);
-		int index = addr_h - ap->addr_base;
+		in_port_t port = ((struct sockaddr_in*)addr)->sin_port;
+		in_addr_t addr_addr = addr->sa_family == AF_INET6 ?
+				((struct sockaddr_in6*)addr)->sin6_addr.s6_addr32[3] :
+				((struct sockaddr_in*)addr)->sin_addr.s_addr;
+		in_addr_t addr_base = ap->addr_base.ss_family == AF_INET6 ?
+				((struct sockaddr_in6*)&ap->addr_base)->sin6_addr.s6_addr32[3] :
+				((struct sockaddr_in*)&ap->addr_base)->sin_addr.s_addr;
+		int index = ntohl(addr_addr) - ntohl(addr_base);
 
 		if (index >= 0 || index < ap->num_addr) {
-			walk = ap->mapper[addr_h - ap->addr_base].addrmap[port_h];
+			walk = ap->mapper[index].addrmap[ntohs(port)];
 		} else {
 			walk = NULL;
 		}
@@ -281,8 +301,9 @@ FreeAddress(addr_pool_t ap, const struct sockaddr_in *addr)
 		walk = TAILQ_FIRST(&ap->used_list);
 		while (walk) {
 			next = TAILQ_NEXT(walk, addr_link);
-			if (addr->sin_port == walk->addr.sin_port && 
-					addr->sin_addr.s_addr == walk->addr.sin_addr.s_addr) {
+			socklen_t sockaddr_size = addr->sa_family == AF_INET6 ?
+									sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+			if (!memcmp(walk, addr, sockaddr_size)) {
 				break;
 			}
 

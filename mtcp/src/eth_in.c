@@ -1,5 +1,6 @@
 #include "ps.h"
 #include "ip_in.h"
+#include "ip6_in.h"
 #include "eth_in.h"
 #include "arp.h"
 #include "debug.h"
@@ -39,6 +40,9 @@ ProcessPacket(mtcp_manager_t mtcp, const int ifidx,
 	} else if (ip_proto == ETH_P_ARP) {
 		ProcessARPPacket(mtcp, cur_ts, ifidx, pkt_data, len);
 		return TRUE;
+
+	} else if (ip_proto == ETH_P_IPV6) {
+		ret = ProcessIPv6Packet(mtcp, cur_ts, ifidx, pkt_data, len);
 
 	} else {
 		//DumpPacket(mtcp, (char *)pkt_data, len, "??", ifidx);
