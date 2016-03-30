@@ -84,26 +84,32 @@ HandleSignal(int signal)
 		core = sched_getcpu();
 		gettimeofday(&cur_ts, NULL);
 
-		if (sigint_cnt[core] > 0 && cur_ts.tv_sec > sigint_ts[core].tv_sec) {
-			for (i = 0; i < num_cpus; i++) {
-				if (running[i]) {
+		if (CONFIG.multi_process) {
+			for (i = 0; i < num_cpus; i++)
+				if (running[i] == TRUE)
 					g_pctx[i]->exit = TRUE;
-				}
-			}
 		} else {
-			for (i = 0; i < num_cpus; i++) {
-				g_pctx[i]->interrupt = TRUE;
-			}
-			if (!app_signal_handler) {
+			if (sigint_cnt[core] > 0 && cur_ts.tv_sec > sigint_ts[core].tv_sec) {
 				for (i = 0; i < num_cpus; i++) {
 					if (running[i]) {
 						g_pctx[i]->exit = TRUE;
 					}
 				}
+			} else {
+				for (i = 0; i < num_cpus; i++) {
+					g_pctx[i]->interrupt = TRUE;
+				}
+				if (!app_signal_handler) {
+					for (i = 0; i < num_cpus; i++) {
+						if (running[i]) {
+							g_pctx[i]->exit = TRUE;
+						}
+					}
+				}
 			}
+			sigint_cnt[core]++;
+			gettimeofday(&sigint_ts[core], NULL);
 		}
-		sigint_cnt[core]++;
-		gettimeofday(&sigint_ts[core], NULL);
 	}
 
 	if (signal != SIGUSR1) {
@@ -1085,11 +1091,13 @@ MTCPRunThread(void *arg)
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
+#ifndef DISABLE_DPDK
 static int MTCPDPDKRunThread(void *arg)
 {
 	MTCPRunThread(arg);
 	return 0;
 }
+#endif
 /*----------------------------------------------------------------------------*/
 mctx_t 
 mtcp_create_context(int cpu)
@@ -1329,18 +1337,24 @@ mtcp_setconf(const struct mtcp_conf *conf)
 	if (!conf)
 		return -1;
 
-	CONFIG.num_cores = conf->num_cores;
-	CONFIG.max_concurrency = conf->max_concurrency;
+	if (conf->num_cores > 0)
+		CONFIG.num_cores = conf->num_cores;
+	if (conf->max_concurrency > 0)
+		CONFIG.max_concurrency = conf->max_concurrency;
+	if (conf->max_num_buffers > 0)
+		CONFIG.max_num_buffers = conf->max_num_buffers;
+	if (conf->rcvbuf_size > 0)
+		CONFIG.rcvbuf_size = conf->rcvbuf_size;
+	if (conf->sndbuf_size > 0)
+		CONFIG.sndbuf_size = conf->sndbuf_size;
 
-	CONFIG.max_num_buffers = conf->max_num_buffers;
-	CONFIG.rcvbuf_size = conf->rcvbuf_size;
-	CONFIG.sndbuf_size = conf->sndbuf_size;
-
-	CONFIG.tcp_timewait = conf->tcp_timewait;
-	CONFIG.tcp_timeout = conf->tcp_timeout;
+	if (conf->tcp_timewait > 0)
+		CONFIG.tcp_timewait = conf->tcp_timewait;
+	if (conf->tcp_timeout > 0)
+		CONFIG.tcp_timeout = conf->tcp_timeout;
 
 	TRACE_CONFIG("Configuration updated by mtcp_setconf().\n");
-	PrintConfiguration();
+	//PrintConfiguration();
 
 	return 0;
 }
@@ -1356,7 +1370,9 @@ mtcp_init(char *config_file)
 	}
 
 	/* getting cpu and NIC */
-	num_cpus = GetNumCPUs();
+	/* set to max cpus only if user has not arbitrarily set it to lower # */
+	num_cpus = (CONFIG.num_cores == 0) ? GetNumCPUs() : CONFIG.num_cores;
+			
 	assert(num_cpus >= 1);
 
 	if (num_cpus > MAX_CPUS) {
