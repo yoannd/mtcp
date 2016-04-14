@@ -83,6 +83,9 @@ extern io_module_func dpdk_module_func;
 /* registered netmap context */
 extern io_module_func netmap_module_func;
 
+/* registered tap context */
+extern io_module_func tap_module_func;
+
 /* Macro to assign IO module */
 #define AssignIOModule(m) {						\
 		if (!strcmp(m, "psio"))					\
@@ -91,6 +94,8 @@ extern io_module_func netmap_module_func;
 			current_iomodule_func = &dpdk_module_func;	\
 		else if (!strcmp(m, "netmap"))				\
 			current_iomodule_func = &netmap_module_func;	\
+		else if (!strcmp(m, "tap"))				\
+				current_iomodule_func = &tap_module_func;	\
 		else							\
 			assert(0);					\
 	}

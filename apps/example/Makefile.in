@@ -3,6 +3,7 @@ CC = gcc -g -O3
 DPDK=@DPDK@
 PS=@PSIO@
 NETMAP=@NETMAP@
+TAP=1
 
 # DPDK LIBRARY and HEADER
 DPDK_INC=@DPDKLIBPATH@/include
@@ -29,6 +30,10 @@ LIBS += -lmtcp -L${PS_DIR}/lib -lps -lpthread -lnuma -lrt
 endif
 
 ifeq ($(NETMAP),1)
+LIBS += -lmtcp -lpthread -lnuma -lrt
+endif
+
+ifeq ($(TAP),1)
 LIBS += -lmtcp -lpthread -lnuma -lrt
 endif
 
