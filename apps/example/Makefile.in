@@ -23,7 +23,7 @@ UTIL_OBJ = ${UTIL_FLD}/http_parsing.o ${UTIL_FLD}/tdate_parse.o
 PS_DIR = ../../io_engine/
 PS_INC = ${PS_DIR}/include
 INC = -I./include/ ${UTIL_INC} ${MTCP_INC} -I${UTIL_FLD}/include
-LIBS = ${MTCP_LIB}
+LIBS = ${MTCP_LIB} -ldl
 ifeq ($(PS),1)
 INC += -I{PS_INC}
 LIBS += -lmtcp -L${PS_DIR}/lib -lps -lpthread -lnuma -lrt
