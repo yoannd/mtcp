@@ -31,6 +31,7 @@
 #define TCP_OPT_TIMESTAMP_LEN	10
 
 #define TCP_DEFAULT_MSS			1460
+#define TCP_DEFAULT_IPV6_MSS    1440
 #define TCP_DEFAULT_WSCALE		7
 #define TCP_INITIAL_WINDOW		14600	// initial window size
 
