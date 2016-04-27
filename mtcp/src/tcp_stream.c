@@ -275,7 +275,8 @@ CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type,
 	stream->on_rto_idx = -1;
 	
 	stream->sndvar->ip_id = 0;
-	stream->sndvar->mss = TCP_DEFAULT_MSS;
+	stream->sndvar->mss = daddr->sa_family == AF_INET6 ?
+			TCP_DEFAULT_IPV6_MSS : TCP_DEFAULT_MSS;
 	stream->sndvar->wscale_mine = TCP_DEFAULT_WSCALE;
 	stream->sndvar->wscale_peer = 0;
 	stream->sndvar->nif_out = GetOutputInterface(&stream->daddr);
