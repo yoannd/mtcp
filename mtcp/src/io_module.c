@@ -411,11 +411,14 @@ SetInterfaceInfo(char* dev_name_list)
 					CONFIG.eths[eidx].ip_addr = *(uint32_t *)&sin & 0xfeffffff;
 				}
 
-				if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0 ) {
-					for (j = 0; j < ETH_ALEN; j ++) {
-						CONFIG.eths[eidx].haddr[j] = rand();
-					}
+				/* generate random hwaddr */
+				srand(time(NULL));
+				for (j = 0; j < ETH_ALEN; j ++) {
+					CONFIG.eths[eidx].haddr[j] = rand();
 				}
+				/* ensure it is not a multicast address */
+				CONFIG.eths[eidx].haddr[0] &= 0xfe;
+
 
 				/* Net MASK */
 				if (ioctl(sock, SIOCGIFNETMASK, &ifr) == 0) {
@@ -448,6 +451,17 @@ SetInterfaceInfo(char* dev_name_list)
 					num_devices_attached);
 				fprintf(stderr, "Interface name: %s\n",
 					iter_if->ifa_name);
+			} else if (iter_if->ifa_addr->sa_family == AF_INET6) {
+				/* Set IPv6 address for device corresponding to iter_if */
+				for (j = 0; j < MAX_DEVICES; j++) {
+					if (!strcmp(iter_if->ifa_name, CONFIG.eths[j].dev_name)) {
+						struct sockaddr_in6* sin6 = (struct sockaddr_in6*) iter_if->ifa_addr;
+						CONFIG.eths[j].ip6_addr = sin6->sin6_addr;
+						CONFIG.eths[j].ip6_addr.s6_addr[15] &= 0xfe;
+						sin6 = (struct sockaddr_in6*) iter_if->ifa_netmask;
+						CONFIG.eths[j].ip6_netmask = sin6->sin6_addr;
+					}
+				}
 			}
 			iter_if = iter_if->ifa_next;
 		} while (iter_if != NULL);
